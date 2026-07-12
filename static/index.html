@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>vertsix / sampler</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="style.css?v=26" />
+</head>
+<body>
+  <div id="loading-screen">
+    <div class="loading-brand">vertsix</div>
+    <div class="loading-anim-wrap">
+      <svg viewBox="-45 -45 90 90" width="120" height="120" id="loading-hex">
+        <polygon points="36.79,0 18.4,31.86 -18.4,31.86 -36.79,0 -18.4,-31.86 18.4,-31.86"
+          fill="none" stroke="currentColor" stroke-width="1.4" class="hex-outline" />
+        <g class="dot-group">
+          <circle cx="0" cy="0" r="1.7" class="dot ring0" />
+          <circle cx="-13.5" cy="-7.79" r="1.7" class="dot ring1" />
+          <circle cx="0" cy="-15.59" r="1.7" class="dot ring1" />
+          <circle cx="13.5" cy="-7.79" r="1.7" class="dot ring1" />
+          <circle cx="13.5" cy="7.79" r="1.7" class="dot ring1" />
+          <circle cx="0" cy="15.59" r="1.7" class="dot ring1" />
+          <circle cx="-13.5" cy="7.79" r="1.7" class="dot ring1" />
+          <circle cx="-27" cy="-15.59" r="1.7" class="dot ring2" />
+          <circle cx="-13.5" cy="-23.38" r="1.7" class="dot ring2" />
+          <circle cx="0" cy="-31.18" r="1.7" class="dot ring2" />
+          <circle cx="13.5" cy="-23.38" r="1.7" class="dot ring2" />
+          <circle cx="27" cy="-15.59" r="1.7" class="dot ring2" />
+          <circle cx="27" cy="0" r="1.7" class="dot ring2" />
+          <circle cx="27" cy="15.59" r="1.7" class="dot ring2" />
+          <circle cx="13.5" cy="23.38" r="1.7" class="dot ring2" />
+          <circle cx="0" cy="31.18" r="1.7" class="dot ring2" />
+          <circle cx="-13.5" cy="23.38" r="1.7" class="dot ring2" />
+          <circle cx="-27" cy="15.59" r="1.7" class="dot ring2" />
+          <circle cx="-27" cy="0" r="1.7" class="dot ring2" />
+        </g>
+      </svg>
+      <div id="loading-text">loading</div>
+    </div>
+    <div class="loading-credit">a jaideep padhi design</div>
+    <div class="loading-copyright">&copy; 2026 Jaideep Padhi. All rights reserved.</div>
+  </div>
+
+  <div class="wrap">
+    <header>
+      <h1>vertsix</h1>
+      <p class="subtitle">GPU height-function sampler &middot; domain wall boundary conditions</p>
+    </header>
+
+    <main>
+      <section class="stage" id="stage">
+        <canvas id="canvas"></canvas>
+        <div class="hud hud-left">
+          <span id="hud-status">idle</span>
+          <span id="hud-device"></span>
+          <span id="hud-zoom">100%</span>
+        </div>
+        <div class="hud hud-right">
+          <span>scroll: zoom</span>
+          <span>drag: pan</span>
+          <span>double-click: reset view</span>
+        </div>
+        <div class="hud-footer">local use &middot; README.md for GPU setup</div>
+      </section>
+
+      <aside class="panel">
+        <div class="section">
+          <div class="section-title">visualization</div>
+          <div class="field">
+            <label for="viewmode">view mode</label>
+            <select id="viewmode">
+              <option value="height">height field (smoothed)</option>
+              <option value="active">liquid / frozen (arctic boundary)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">parameters</div>
+          <div class="field">
+            <label for="n">size n</label>
+            <input type="range" id="n" min="10" max="300" step="1" value="80" />
+            <output id="n-out">80</output>
+          </div>
+
+          <div class="field">
+            <label for="delta">c<sub>up</sub> / c<sub>down</sub> weight bias &Delta;</label>
+            <input type="range" id="delta" min="-4" max="4" step="0.05" value="0" />
+            <output id="delta-out">0.00 (uniform / ice point)</output>
+          </div>
+
+          <div class="field">
+            <label for="speed">sweeps per frame</label>
+            <input type="range" id="speed" min="1" max="60" step="1" value="6" />
+            <output id="speed-out">6</output>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">sampling</div>
+          <div class="row">
+            <button id="btn-init">reset</button>
+            <button id="btn-play" class="primary">run</button>
+            <button id="btn-step">step</button>
+          </div>
+
+          <div class="row">
+            <button id="btn-exact" class="exact">exact sample (CFTP)</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">export</div>
+          <div class="row">
+            <button id="btn-save">save PNG</button>
+            <button id="btn-save-svg">save SVG</button>
+          </div>
+        </div>
+
+        <div class="counter">
+          sweeps elapsed: <span id="sweep-count">0</span><br/>
+          <span id="exact-info"></span>
+        </div>
+
+        <p class="note">
+          Δ = ln(c<sub>up</sub>/c<sub>down</sub>) biases local flips; Δ=0 is the
+          uniform ice point. <strong>Exact sample</strong> uses Coupling From
+          The Past for a mathematically exact draw (n&le;250).
+        </p>
+      </aside>
+    </main>
+
+  </div>
+
+<script src="draw.js?v=18"></script>
+</body>
+</html>
