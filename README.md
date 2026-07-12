@@ -1,7 +1,7 @@
 # six-vertex sampler
 
 A local, GPU-accelerated sampler and viewer for the six-vertex model with
-domain-wall boundary conditions (DWBC) — in the spirit of Leonid Petrov's
+domain-wall boundary conditions (DWBC) in the spirit of Leonid Petrov's
 [domino-draw](https://lpetrov.cc/domino-draw/) and
 [lozenge-draw](https://lpetrov.cc/lozenge-draw/), for the six-vertex / ASM
 case that (per Vadim Gorin) doesn't yet have an easily accessible
