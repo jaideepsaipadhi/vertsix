@@ -1,4 +1,4 @@
-# six-vertex sampler
+# (vertsix) six-vertex sampler
 
 A local, GPU-accelerated sampler and viewer for the six-vertex model with
 domain-wall boundary conditions (DWBC) in the spirit of Leonid Petrov's
