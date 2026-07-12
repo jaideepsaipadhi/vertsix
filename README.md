@@ -1,7 +1,7 @@
-# (vertsix) six-vertex sampler
+# six-vertex sampler
 
 A local, GPU-accelerated sampler and viewer for the six-vertex model with
-domain-wall boundary conditions (DWBC) in the spirit of Leonid Petrov's
+domain-wall boundary conditions (DWBC) — in the spirit of Leonid Petrov's
 [domino-draw](https://lpetrov.cc/domino-draw/) and
 [lozenge-draw](https://lpetrov.cc/lozenge-draw/), for the six-vertex / ASM
 case that (per Vadim Gorin) doesn't yet have an easily accessible
@@ -144,3 +144,14 @@ them is the arctic circle/curve itself.
   literature and already reproduces the arctic-circle phenomenon.
 - `SixVertexSampler.to_json()` / `.height_array()` can be used directly in
   a notebook if you just want the raw samples without the web UI.
+
+## Contributing
+
+Issues and pull requests are welcome — bug reports, feature ideas, or
+extensions (asymmetric weights, additional boundary conditions, region
+drawing, etc.) are all fair game. Please include your `n`, Δ, and whether
+you're running on GPU or the numpy fallback when filing a bug.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
