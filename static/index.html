@@ -65,7 +65,7 @@
           <span>drag: pan</span>
           <span>double-click: reset view</span>
         </div>
-        <div class="hud-footer">local use &middot; README.md for GPU setup</div>
+        <div class="hud-footer">live sampling runs in your browser &middot; exact sampling runs server-side</div>
       </section>
 
       <aside class="panel">
@@ -89,9 +89,26 @@
           </div>
 
           <div class="field">
-            <label for="delta">c<sub>up</sub> / c<sub>down</sub> weight bias &Delta;</label>
-            <input type="range" id="delta" min="-4" max="4" step="0.05" value="0" />
-            <output id="delta-out">0.00 (uniform / ice point)</output>
+            <label for="b-weight">b weight (b<sub>1</sub>=b<sub>2</sub>)</label>
+            <input type="range" id="b-weight" min="0.1" max="3" step="0.02" value="1" />
+            <output id="b-weight-out">1.00</output>
+          </div>
+
+          <div class="field">
+            <label for="c1-weight">c<sub>1</sub> weight</label>
+            <input type="range" id="c1-weight" min="0.1" max="3" step="0.02" value="1" />
+            <output id="c1-weight-out">1.00</output>
+          </div>
+
+          <div class="field">
+            <label for="c2-weight">c<sub>2</sub> weight</label>
+            <input type="range" id="c2-weight" min="0.1" max="3" step="0.02" value="1" />
+            <output id="c2-weight-out">1.00</output>
+          </div>
+
+          <div class="field">
+            <label>&Delta; = (a<sub>1</sub>a<sub>2</sub>+b<sub>1</sub>b<sub>2</sub>&minus;c<sub>1</sub>c<sub>2</sub>) / (2&radic;(a<sub>1</sub>a<sub>2</sub>b<sub>1</sub>b<sub>2</sub>))</label>
+            <output id="delta-display" style="font-size:1.05em;font-weight:700;">0.50 &middot; disordered (uniform weights)</output>
           </div>
 
           <div class="field">
@@ -112,6 +129,11 @@
           <div class="row">
             <button id="btn-exact" class="exact">exact sample (CFTP)</button>
           </div>
+          <p class="note" id="exact-gate-note">
+            Exact sampling is proven mathematically valid only at a=b=1
+            (c<sub>1</sub>, c<sub>2</sub> free). Set b weight back to 1.00 to
+            re-enable it.
+          </p>
         </div>
 
         <div class="section">
@@ -128,15 +150,19 @@
         </div>
 
         <p class="note">
-          Δ = ln(c<sub>up</sub>/c<sub>down</sub>) biases local flips; Δ=0 is the
-          uniform ice point. <strong>Exact sample</strong> uses Coupling From
-          The Past for a mathematically exact draw (n&le;250).
+          a<sub>1</sub>=a<sub>2</sub>=1 fixed (WLOG by gauge freedom -- the
+          model only depends on 2 independent ratios). &Delta;&gt;1:
+          ferroelectric. &minus;1&le;&Delta;&lt;1: disordered. &Delta;&lt;&minus;1:
+          antiferroelectric. <strong>Exact sample</strong> uses Coupling From
+          The Past for a mathematically exact draw (n&le;250), valid only in
+          the a=b=1 regime.
         </p>
       </aside>
     </main>
 
   </div>
 
-<script src="draw.js?v=18"></script>
+<script src="sixvertex.js?v=1"></script>
+<script src="draw.js?v=20"></script>
 </body>
 </html>

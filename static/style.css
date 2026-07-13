@@ -385,23 +385,25 @@ button.exact:disabled {
 .note strong { color: var(--accent-soft); }
 
 @media (max-height: 56em) {
-  .panel { padding: 0.5em; gap: 0.35em; }
-  .section { padding: 0.35em 0.5em; gap: 0.35em; }
-  .field label { margin-bottom: 0.15em; }
-  .field output { margin-top: 0.1em; }
+  .panel { padding: 0.5em; gap: 0.3em; }
+  .section { padding: 0.3em 0.5em; gap: 0.28em; }
+  .field label { margin-bottom: 0.1em; }
+  .field output { margin-top: 0.05em; }
   .row { gap: 0.25em; }
-  button { padding: 0.4em 0.4em; }
-  .note { font-size: 0.68em; }
+  button { padding: 0.35em 0.4em; }
+  .note { font-size: 0.66em; line-height: 1.25; }
 }
 
-@media (max-height: 44em) {
-  .note { display: none; }
-  .section-title { padding-bottom: 0.2em; font-size: 0.65em; }
-  .field label { font-size: 0.75em; }
+@media (max-height: 48em) {
+  .note:not(#exact-gate-note) { display: none; }
+  .section-title { padding-bottom: 0.15em; font-size: 0.68em; }
+  .field label { font-size: 0.78em; }
+  .field { margin-bottom: 0.05em; }
 }
 
 @media (max-height: 38em) {
   .section-title { display: none; }
-  .section { padding: 0.3em 0.4em; gap: 0.25em; }
-  button { padding: 0.32em 0.3em; }
+  .section { padding: 0.28em 0.4em; gap: 0.2em; }
+  button { padding: 0.3em 0.3em; }
+  #exact-gate-note { font-size: 0.6em; }
 }

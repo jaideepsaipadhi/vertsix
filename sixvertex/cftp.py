@@ -3,6 +3,20 @@ import numpy as np
 
 from .sampler import SixVertexSampler
 
+# CFTP here deliberately implements ONLY the restricted regime (a1=a2=b1=b2=1,
+# varying c1/c2 via c_up/c_down) -- this is the one case proven monotone (the
+# shared-random-target coupling below preserves pointwise ordering between the
+# lo/hi chains, verified by direct simulation with zero violations over
+# thousands of coupled half-sweeps).
+#
+# The general (a1,a2,b1,b2,c1,c2) weighted dynamics implemented in
+# sampler.py's live MCMC path is NOT used here, because monotonicity was
+# empirically checked and found to BREAK under it (a shared-seed coupling
+# violated pointwise ordering within ~50 sweeps in testing). Exact sampling
+# via CFTP for the fully general model is an open problem, not just an
+# engineering gap -- do not extend this function to accept a1/a2/b1/b2
+# without a fresh monotonicity proof/verification first.
+
 
 def _rand_field(master_seed: int, k: int, shape):
     ss = np.random.SeedSequence([master_seed, k])

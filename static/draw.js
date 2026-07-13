@@ -7,8 +7,14 @@
 
   const nSlider = document.getElementById("n");
   const nOut = document.getElementById("n-out");
-  const deltaSlider = document.getElementById("delta");
-  const deltaOut = document.getElementById("delta-out");
+  const bSlider = document.getElementById("b-weight");
+  const bOut = document.getElementById("b-weight-out");
+  const c1Slider = document.getElementById("c1-weight");
+  const c1Out = document.getElementById("c1-weight-out");
+  const c2Slider = document.getElementById("c2-weight");
+  const c2Out = document.getElementById("c2-weight-out");
+  const deltaDisplay = document.getElementById("delta-display");
+  const exactGateNote = document.getElementById("exact-gate-note");
   const speedSlider = document.getElementById("speed");
   const speedOut = document.getElementById("speed-out");
   const btnInit = document.getElementById("btn-init");
@@ -24,34 +30,54 @@
   const hudDevice = document.getElementById("hud-device");
   const hudZoom = document.getElementById("hud-zoom");
 
-  const debugLines = null;
   function dlog(msg) {
   }
   window.addEventListener("error", (e) => {
     dlog(`UNCAUGHT ERROR: ${e.message} (${e.filename}:${e.lineno})`);
   });
 
+  let sampler = null;
   let lastFrame = null;
   let playing = false;
   let totalSweeps = 0;
   let busy = false;
 
-  function deltaLabel(d) {
-    if (Math.abs(d) < 0.01) return "0.00 (uniform / ice point)";
-    return d.toFixed(2);
+  function currentWeights() {
+    return {
+      a1: 1, a2: 1,
+      b1: parseFloat(bSlider.value), b2: parseFloat(bSlider.value),
+      c1: parseFloat(c1Slider.value), c2: parseFloat(c2Slider.value),
+    };
+  }
+
+  function isExactSafe(w) {
+    return w.a1 === 1 && w.a2 === 1 && w.b1 === 1 && w.b2 === 1;
+  }
+
+  function updateDeltaDisplay() {
+    const w = currentWeights();
+    const a1a2 = w.a1 * w.a2, b1b2 = w.b1 * w.b2, c1c2 = w.c1 * w.c2;
+    const delta = (a1a2 + b1b2 - c1c2) / (2 * Math.sqrt(a1a2 * b1b2));
+    let regime;
+    if (delta > 1) regime = "ferroelectric";
+    else if (delta < -1) regime = "antiferroelectric";
+    else regime = "disordered";
+    if (w.b1 === 1 && w.c1 === 1 && w.c2 === 1) regime += " (uniform weights)";
+    deltaDisplay.textContent = `${delta.toFixed(2)} \u00b7 ${regime}`;
+
+    const safe = isExactSafe(w);
+    btnExact.disabled = !safe;
+    btnExact.style.opacity = safe ? "1" : "0.4";
+    btnExact.style.cursor = safe ? "pointer" : "not-allowed";
+    exactGateNote.style.display = safe ? "none" : "block";
   }
 
   nSlider.addEventListener("input", () => (nOut.textContent = nSlider.value));
-  deltaSlider.addEventListener("input", () => {
-    deltaOut.textContent = deltaLabel(parseFloat(deltaSlider.value));
-  });
+  bSlider.addEventListener("input", () => { bOut.textContent = parseFloat(bSlider.value).toFixed(2); updateDeltaDisplay(); });
+  c1Slider.addEventListener("input", () => { c1Out.textContent = parseFloat(c1Slider.value).toFixed(2); updateDeltaDisplay(); });
+  c2Slider.addEventListener("input", () => { c2Out.textContent = parseFloat(c2Slider.value).toFixed(2); updateDeltaDisplay(); });
   speedSlider.addEventListener("input", () => (speedOut.textContent = speedSlider.value));
-
-  function weightsFromDelta(delta) {
-    const c_up = Math.exp(delta);
-    const c_down = 1.0;
-    return { c_up, c_down };
-  }
+  updateDeltaDisplay();
 
   let dpr = 1;
   function sizeStage() {
@@ -100,18 +126,38 @@
     ];
   }
 
+  function frameFromSampler(s) {
+    const size = s.size;
+    const { min, max } = s.minMax();
+    const active = s.activeMask();
+    return {
+      n: s.n,
+      get: (i, j) => s.H[i * size + j],
+      getActive: (i, j) => active[i * size + j] === 1,
+      min, max,
+    };
+  }
+
+  function frameFromServerData(data) {
+    return {
+      n: data.n,
+      get: (i, j) => data.height[i][j],
+      getActive: (i, j) => data.active[i][j] === 1,
+      min: data.min, max: data.max,
+    };
+  }
+
   function buildOffscreen(frame, mode) {
-    const H = frame.height;
     const n = frame.n;
     off.width = n;
     off.height = n;
     const img = offCtx.createImageData(n, n);
 
     if (mode === "active") {
-      const A = frame.active;
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
-          const isActive = A[i][j] || A[i + 1][j] || A[i][j + 1] || A[i + 1][j + 1];
+          const isActive = frame.getActive(i, j) || frame.getActive(i + 1, j) ||
+                            frame.getActive(i, j + 1) || frame.getActive(i + 1, j + 1);
           const idx = (i * n + j) * 4;
           if (isActive) {
             img.data[idx] = 232; img.data[idx + 1] = 160; img.data[idx + 2] = 92;
@@ -126,7 +172,7 @@
       const span = Math.max(1, max - min);
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
-          const avg = (H[i][j] + H[i + 1][j] + H[i][j + 1] + H[i + 1][j + 1]) / 4;
+          const avg = (frame.get(i, j) + frame.get(i + 1, j) + frame.get(i, j + 1) + frame.get(i + 1, j + 1)) / 4;
           const t = (avg - min) / span;
           const [r, g, b] = colorFor(t);
           const idx = (i * n + j) * 4;
@@ -246,7 +292,6 @@
       camera.scale = newScale;
       applyZoomLabel();
       draw();
-      dlog(`wheel: scale=${camera.scale.toFixed(3)} cam=(${camera.x.toFixed(1)},${camera.y.toFixed(1)})`);
     } catch (err) {
       dlog(`WHEEL ERROR: ${err.message}`);
     }
@@ -262,7 +307,6 @@
       canvas.classList.add("grabbing");
       const p = cssPos(e);
       dragAnchorWorld = { x: camera.x + p.x / camera.scale, y: camera.y + p.y / camera.scale };
-      dlog(`pointerdown: id=${e.pointerId} type=${e.pointerType}`);
     } catch (err) {
       dlog(`POINTERDOWN ERROR: ${err.message}`);
     }
@@ -275,7 +319,6 @@
       camera.x = dragAnchorWorld.x - p.x / camera.scale;
       camera.y = dragAnchorWorld.y - p.y / camera.scale;
       draw();
-      dlog(`pointermove: cam=(${camera.x.toFixed(1)},${camera.y.toFixed(1)})`);
     } catch (err) {
       dlog(`POINTERMOVE ERROR: ${err.message}`);
     }
@@ -284,7 +327,6 @@
   function endDrag(e) {
     if (dragPointerId === null || (e && e.pointerId !== dragPointerId)) return;
     try { canvas.releasePointerCapture(dragPointerId); } catch (err) {}
-    dlog(`drag ended: id=${dragPointerId}`);
     dragPointerId = null;
     canvas.classList.remove("grabbing");
   }
@@ -294,34 +336,6 @@
     fitCamera();
     draw();
   });
-
-  dlog(`page loaded. pointerEvents supported: ${typeof window.PointerEvent !== "undefined"}`);
-
-  async function apiInit() {
-    busy = true;
-    hudStatus.textContent = "initializing...";
-    const n = parseInt(nSlider.value, 10);
-    const { c_up, c_down } = weightsFromDelta(parseFloat(deltaSlider.value));
-    try {
-      const res = await fetch("/api/init", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ n, c_up, c_down }),
-      });
-      const data = await res.json();
-      totalSweeps = 0;
-      sweepCount.textContent = totalSweeps;
-      hudDevice.textContent = data.using_gpu ? `torch:${data.device}` : "numpy (cpu fallback)";
-      hudStatus.textContent = "ready";
-      renderFrame(JSON.parse(data.frame));
-      dlog(`apiInit: ok, n=${n}`);
-    } catch (err) {
-      dlog(`APIINIT ERROR: ${err.message}`);
-      hudStatus.textContent = "error (see log)";
-    }
-    busy = false;
-    hideLoadingScreen();
-  }
 
   const loadStartTime = Date.now();
   const MIN_LOADING_MS = 3000;
@@ -337,43 +351,49 @@
     }, remaining);
   }
 
-  async function apiStep() {
-    if (busy) return;
+  function localInit() {
     busy = true;
-    const sweeps = parseInt(speedSlider.value, 10);
-    hudStatus.textContent = "sampling...";
+    hudStatus.textContent = "initializing...";
+    const n = parseInt(nSlider.value, 10);
+    const w = currentWeights();
     try {
-      const res = await fetch("/api/step", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sweeps }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        totalSweeps += sweeps;
-        sweepCount.textContent = totalSweeps;
-        lastFrame = JSON.parse(data.frame);
-        draw();
-      }
-      hudStatus.textContent = playing ? "running" : "ready";
+      sampler = new SixVertexJS(n, w, Date.now() & 0xffffffff);
+      totalSweeps = 0;
+      sweepCount.textContent = totalSweeps;
+      hudDevice.textContent = "in-browser (JS)";
+      hudStatus.textContent = "ready";
+      renderFrame(frameFromSampler(sampler));
+      updateDeltaDisplay();
     } catch (err) {
-      dlog(`APISTEP ERROR: ${err.message}`);
+      dlog(`LOCALINIT ERROR: ${err.message}`);
+      hudStatus.textContent = "error (see log)";
     }
     busy = false;
+    hideLoadingScreen();
+  }
+
+  function localStep() {
+    if (busy || !sampler) return;
+    const sweeps = parseInt(speedSlider.value, 10);
+    hudStatus.textContent = playing ? "running" : "ready";
+    sampler.step(sweeps);
+    totalSweeps += sweeps;
+    sweepCount.textContent = totalSweeps;
+    lastFrame = frameFromSampler(sampler);
+    draw();
   }
 
   function loop() {
     if (!playing) return;
-    apiStep().then(() => {
-      if (playing) requestAnimationFrame(loop);
-    });
+    localStep();
+    requestAnimationFrame(loop);
   }
 
   btnInit.addEventListener("click", () => {
     playing = false;
     btnPlay.classList.remove("active");
     btnPlay.textContent = "run";
-    apiInit();
+    localInit();
   });
 
   btnPlay.addEventListener("click", () => {
@@ -384,32 +404,36 @@
   });
 
   btnStep.addEventListener("click", () => {
-    if (!playing) apiStep();
+    if (!playing) localStep();
   });
 
   btnExact.addEventListener("click", async () => {
     if (busy) return;
+    const w = currentWeights();
+    if (!isExactSafe(w)) return;
     playing = false;
     btnPlay.classList.remove("active");
     btnPlay.textContent = "run";
     busy = true;
     btnExact.disabled = true;
     btnExact.textContent = "coalescing...";
-    hudStatus.textContent = "CFTP running...";
+    hudStatus.textContent = "CFTP running (server)...";
     const n = parseInt(nSlider.value, 10);
-    const { c_up, c_down } = weightsFromDelta(parseFloat(deltaSlider.value));
     try {
       const res = await fetch("/api/exact", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ n, c_up, c_down }),
+        body: JSON.stringify({ n, c_up: w.c1, c_down: w.c2 }),
       });
       const data = await res.json();
       if (data.ok) {
         totalSweeps = 0;
         sweepCount.textContent = totalSweeps;
         exactInfo.textContent = `exact: coalesced after ${data.info.half_sweeps} half-sweeps (${data.info.attempts} doublings)`;
-        renderFrame(JSON.parse(data.frame));
+        const frameData = JSON.parse(data.frame);
+        sampler = null;
+        renderFrame(frameFromServerData(frameData));
+        hudDevice.textContent = "server (numpy/torch, CFTP only)";
         hudStatus.textContent = "exact sample";
       } else {
         exactInfo.textContent = `CFTP failed: ${data.error}`;
@@ -419,9 +443,9 @@
       exactInfo.textContent = "CFTP request failed";
       hudStatus.textContent = "ready";
     }
-    btnExact.disabled = false;
     btnExact.textContent = "exact sample (CFTP)";
     busy = false;
+    updateDeltaDisplay();
   });
 
   btnSave.addEventListener("click", () => {
@@ -438,21 +462,20 @@
     const size = n * cell;
     let rects = "";
     if (viewMode.value === "active") {
-      const A = lastFrame.active;
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
-          const isActive = A[i][j] || A[i + 1][j] || A[i][j + 1] || A[i + 1][j + 1];
+          const isActive = lastFrame.getActive(i, j) || lastFrame.getActive(i + 1, j) ||
+                            lastFrame.getActive(i, j + 1) || lastFrame.getActive(i + 1, j + 1);
           const fill = isActive ? "#e8a05c" : "#141e2a";
           rects += `<rect x="${j * cell}" y="${i * cell}" width="${cell}" height="${cell}" fill="${fill}"/>`;
         }
       }
     } else {
-      const H = lastFrame.height;
       const min = lastFrame.min, max = lastFrame.max;
       const span = Math.max(1, max - min);
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
-          const avg = (H[i][j] + H[i + 1][j] + H[i][j + 1] + H[i + 1][j + 1]) / 4;
+          const avg = (lastFrame.get(i, j) + lastFrame.get(i + 1, j) + lastFrame.get(i, j + 1) + lastFrame.get(i + 1, j + 1)) / 4;
           const t = (avg - min) / span;
           const [r, g, b] = colorFor(t);
           const fill = `rgb(${r | 0},${g | 0},${b | 0})`;
@@ -471,6 +494,6 @@
   });
 
   sizeStage();
-  apiInit();
+  localInit();
   setTimeout(hideLoadingScreen, 8000);
 })();

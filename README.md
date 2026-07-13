@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="static/icons/social-preview.png" alt="vertsix" width="600">
-</p>
-
 # six-vertex sampler
 
 A local, GPU-accelerated sampler and viewer for the six-vertex model with
