@@ -76,7 +76,16 @@
             <select id="viewmode">
               <option value="height">height field (smoothed)</option>
               <option value="active">liquid / frozen (arctic boundary)</option>
+              <option value="vertex6">6 vertex types (colored)</option>
             </select>
+          </div>
+          <div id="vertex6-legend" style="display:none;font-family:var(--mono);font-size:0.78em;line-height:1.7;margin-top:0.4em;">
+            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#e85c5c;margin-right:0.5em;border-radius:2px;"></span>a<sub>1</sub> (empty vertex)</div>
+            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#e8a05c;margin-right:0.5em;border-radius:2px;"></span>a<sub>2</sub> (both paths through)</div>
+            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#e8dc5c;margin-right:0.5em;border-radius:2px;"></span>b<sub>1</sub> (vertical through)</div>
+            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#b45ce8;margin-right:0.5em;border-radius:2px;"></span>b<sub>2</sub> (horizontal through)</div>
+            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#7fd8e8;margin-right:0.5em;border-radius:2px;"></span>c<sub>1</sub> (turn)</div>
+            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#5c8ce8;margin-right:0.5em;border-radius:2px;"></span>c<sub>2</sub> (turn, other way)</div>
           </div>
         </div>
 
@@ -88,10 +97,33 @@
             <output id="n-out">80</output>
           </div>
 
+          <div class="field" style="display:flex;align-items:center;gap:0.5em;flex-direction:row;">
+            <input type="checkbox" id="symmetric-check" checked style="width:auto;" />
+            <label for="symmetric-check" style="margin:0;">symmetric (a<sub>1</sub>=a<sub>2</sub>, b<sub>1</sub>=b<sub>2</sub>, c<sub>1</sub>=c<sub>2</sub>)</label>
+          </div>
+
           <div class="field">
-            <label for="b-weight">b weight (b<sub>1</sub>=b<sub>2</sub>)</label>
-            <input type="range" id="b-weight" min="0.1" max="3" step="0.02" value="1" />
-            <output id="b-weight-out">1.00</output>
+            <label for="a1-weight">a<sub>1</sub> weight</label>
+            <input type="range" id="a1-weight" min="0.1" max="3" step="0.02" value="1" />
+            <output id="a1-weight-out">1.00</output>
+          </div>
+
+          <div class="field">
+            <label for="a2-weight">a<sub>2</sub> weight</label>
+            <input type="range" id="a2-weight" min="0.1" max="3" step="0.02" value="1" />
+            <output id="a2-weight-out">1.00</output>
+          </div>
+
+          <div class="field">
+            <label for="b1-weight">b<sub>1</sub> weight</label>
+            <input type="range" id="b1-weight" min="0.1" max="3" step="0.02" value="1" />
+            <output id="b1-weight-out">1.00</output>
+          </div>
+
+          <div class="field">
+            <label for="b2-weight">b<sub>2</sub> weight</label>
+            <input type="range" id="b2-weight" min="0.1" max="3" step="0.02" value="1" />
+            <output id="b2-weight-out">1.00</output>
           </div>
 
           <div class="field">
@@ -150,12 +182,18 @@
         </div>
 
         <p class="note">
-          a<sub>1</sub>=a<sub>2</sub>=1 fixed (WLOG by gauge freedom -- the
-          model only depends on 2 independent ratios). &Delta;&gt;1:
-          ferroelectric. &minus;1&le;&Delta;&lt;1: disordered. &Delta;&lt;&minus;1:
+          All 6 weights (a<sub>1</sub>,a<sub>2</sub>,b<sub>1</sub>,b<sub>2</sub>,c<sub>1</sub>,c<sub>2</sub>)
+          are independently adjustable; the model has 2 free parameters up to
+          overall scale, so &Delta; alone doesn't capture everything once
+          you leave the symmetric case. &Delta;&gt;1: ferroelectric.
+          &minus;1&le;&Delta;&lt;1: disordered. &Delta;&lt;&minus;1:
           antiferroelectric. <strong>Exact sample</strong> uses Coupling From
-          The Past for a mathematically exact draw (n&le;250), valid only in
-          the a=b=1 regime.
+          The Past for a mathematically exact draw (n&le;250). This is
+          verified empirically (thousands of monotone-coupled sweeps, zero
+          ordering violations) at a<sub>1</sub>=a<sub>2</sub>=b<sub>1</sub>=b<sub>2</sub>=1,
+          not derived from a published theorem -- monotonicity was directly
+          tested and found to break under general weights, so exact sampling
+          is restricted to that regime.
         </p>
       </aside>
     </main>
@@ -163,6 +201,6 @@
   </div>
 
 <script src="sixvertex.js?v=1"></script>
-<script src="draw.js?v=20"></script>
+<script src="draw.js?v=21"></script>
 </body>
 </html>

@@ -296,6 +296,7 @@ main {
   width: 100%;
   accent-color: var(--accent);
   height: 0.3em;
+  touch-action: manipulation;
 }
 
 .field output {
@@ -335,6 +336,7 @@ button {
   padding: 0.6em 0.4em;
   border-radius: 0.35em;
   cursor: pointer;
+  touch-action: manipulation;
   transition: border-color 0.15s, color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 button:hover {
