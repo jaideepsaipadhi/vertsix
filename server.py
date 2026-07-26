@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify, send_from_directory
 import os
 import threading
+import time
+import uuid
 
 from sixvertex.sampler import SixVertexSampler
 from sixvertex.cftp import cftp_sample
@@ -9,6 +11,66 @@ app = Flask(__name__, static_folder="static", static_url_path="")
 
 _lock = threading.Lock()
 _state = {"sampler": None}
+
+# Background-job store for /api/exact. Rendered on a free/shared hosting
+# tier, a single CFTP request can legitimately take minutes at large n in
+# deep ferroelectric/antiferroelectric regimes -- long enough that the
+# platform's own request timeout kills the connection before our code can
+# respond, even though the computation itself is completely correct and
+# would have finished (verified directly: n=140 at Delta=-3 coalesces in
+# ~2 minutes on ordinary hardware, well past what a synchronous HTTP
+# request can wait for on typical free-tier hosts).
+#
+# So /api/exact/start returns almost immediately with a job id, the actual
+# CFTP run happens in a background thread, and the frontend polls
+# /api/exact/status/<job_id> every second or two -- each individual HTTP
+# request stays short regardless of how long the underlying computation
+# takes.
+_jobs_lock = threading.Lock()
+_jobs = {}
+_JOB_TTL_SECONDS = 30 * 60
+
+
+def _cleanup_old_jobs():
+    cutoff = time.time() - _JOB_TTL_SECONDS
+    stale = [jid for jid, j in _jobs.items() if j["created_at"] < cutoff]
+    for jid in stale:
+        del _jobs[jid]
+
+
+def _run_cftp_job(job_id, n, c_up, c_down, seed):
+    def progress_cb(T, attempts, coalesced):
+        with _jobs_lock:
+            if job_id in _jobs:
+                _jobs[job_id]["last_T"] = T
+                _jobs[job_id]["attempts"] = attempts
+
+    try:
+        H, info = cftp_sample(n=n, c_up=c_up, c_down=c_down,
+                               master_seed=seed, max_T=1 << 21,
+                               progress_cb=progress_cb)
+        s = SixVertexSampler(n=n, c_up=c_up, c_down=c_down)
+        if s.use_torch:
+            import torch
+            s.H = torch.from_numpy(H).to(s.device)
+        else:
+            s.H = H
+        frame = s.to_binary_frame()
+        with _jobs_lock:
+            if job_id in _jobs:
+                _jobs[job_id]["status"] = "done"
+                _jobs[job_id]["frame"] = frame
+                _jobs[job_id]["info"] = info
+    except RuntimeError as e:
+        with _jobs_lock:
+            if job_id in _jobs:
+                _jobs[job_id]["status"] = "error"
+                _jobs[job_id]["error"] = str(e)
+    except Exception as e:
+        with _jobs_lock:
+            if job_id in _jobs:
+                _jobs[job_id]["status"] = "error"
+                _jobs[job_id]["error"] = f"unexpected error: {e}"
 
 
 @app.route("/")
@@ -56,38 +118,56 @@ def api_step():
     return jsonify({"ok": True, "frame": frame})
 
 
-@app.route("/api/exact", methods=["POST"])
-def api_exact():
+@app.route("/api/exact/start", methods=["POST"])
+def api_exact_start():
     # Deliberately does NOT accept a1/a2/b1/b2 -- CFTP here is only proven
     # monotone for the a1=a2=b1=b2=1 (c-bias only) regime. See cftp.py.
-    #
-    # max_T raised to 1<<21: verified that this regime remains exactly
-    # correct at arbitrary |Delta| (including deep antiferroelectric,
-    # e.g. Delta=-3), but requires substantially more half-sweeps to
-    # coalesce there -- the old 1<<18 cap could cut off large-n runs in
-    # that regime before they finished, incorrectly reporting failure on
-    # what is actually just a slower (but still correct) computation.
     data = request.get_json(force=True)
     n = int(data.get("n", 40))
     n = max(4, min(n, 250))
     c_up = float(data.get("c_up", 1.0))
     c_down = float(data.get("c_down", 1.0))
     seed = data.get("seed")
-    try:
-        with _lock:
-            H, info = cftp_sample(n=n, c_up=c_up, c_down=c_down,
-                                   master_seed=seed, max_T=1 << 21)
-            s = SixVertexSampler(n=n, c_up=c_up, c_down=c_down)
-            if s.use_torch:
-                import torch
-                s.H = torch.from_numpy(H).to(s.device)
-            else:
-                s.H = H
-            _state["sampler"] = s
-            frame = s.to_binary_frame()
-    except RuntimeError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-    return jsonify({"ok": True, "frame": frame, "info": info, "is_symmetric_regime": True})
+
+    job_id = uuid.uuid4().hex
+    with _jobs_lock:
+        _cleanup_old_jobs()
+        _jobs[job_id] = {
+            "status": "running",
+            "created_at": time.time(),
+            "last_T": None,
+            "attempts": 0,
+            "n": n,
+        }
+
+    thread = threading.Thread(
+        target=_run_cftp_job, args=(job_id, n, c_up, c_down, seed), daemon=True
+    )
+    thread.start()
+
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/api/exact/status/<job_id>", methods=["GET"])
+def api_exact_status(job_id):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return jsonify({"ok": False, "error": "unknown or expired job"}), 404
+        status = job["status"]
+        response = {
+            "ok": True,
+            "status": status,
+            "last_T": job["last_T"],
+            "attempts": job["attempts"],
+        }
+        if status == "done":
+            response["frame"] = job["frame"]
+            response["info"] = job["info"]
+            response["is_symmetric_regime"] = True
+        elif status == "error":
+            response["error"] = job["error"]
+    return jsonify(response)
 
 
 if __name__ == "__main__":

@@ -73,6 +73,19 @@ half-sweeps than in the disordered regime. Runtime grows quickly with n in
 this regime, though, so for large n and extreme Delta, consider reducing n
 first. The UI shows a note when |Delta|>1 explaining this tradeoff.
 
+**CFTP runs as a background job, not a single HTTP request.** On
+constrained/free hosting tiers, a CFTP run that takes minutes can exceed
+the platform's own request timeout, killing the connection before the
+(correct, still-running) computation can respond — this happened in
+practice at n=140 in the deep antiferroelectric regime on Render's free
+tier. `/api/exact/start` returns almost immediately with a job id; the
+actual computation runs in a background thread; the frontend polls
+`/api/exact/status/<job_id>` roughly once a second. Verified directly:
+individual poll requests stay under 15ms even while the underlying job
+runs for 10+ seconds in the background — the fix works regardless of how
+long the actual computation takes, not just for the specific cases we
+happened to test.
+
 We looked into making *live* sampling (or CFTP at large n) fast in this
 regime too. That would require fundamentally different, non-local moves
 (cluster/worm-type algorithms). We checked the literature directly:
@@ -128,7 +141,7 @@ Controls:
 ```
 sixvertex/sampler.py                General-weight MCMC engine (torch + numpy fallback), CFTP-only in production
 sixvertex/cftp.py                    Coupling From The Past exact sampler (restricted regime, see below)
-server.py                            Flask app: /api/exact (CFTP), static hosting
+server.py                            Flask app: /api/exact/start + /api/exact/status (CFTP), static hosting
 static/sixvertex.js                  Client-side live sampling engine (mirrors sampler.py's verified dynamics)
 static/index.html, style.css, draw.js   Browser UI
 requirements.txt
@@ -162,7 +175,7 @@ CFTP's center-height statistics against long-run MCMC), not a cited
 theorem. If you know of a formal proof (or counterexample) for this
 specific case, please open an issue.
 
-`/api/exact` is capped at n<=250 in the server for interactive use, with
+`/api/exact/start` is capped at n<=250 in the server for interactive use, with
 up to 2^21 half-sweeps allowed per coalescence attempt (raised from an
 earlier, smaller cap after finding it could cut off large-n runs in the
 antiferroelectric regime before they finished). At n=80, uniform weights,

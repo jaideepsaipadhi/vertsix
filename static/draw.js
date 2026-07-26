@@ -516,36 +516,63 @@
     const n = parseInt(nSlider.value, 10);
 
     const startTime = Date.now();
-    const progressTimer = setInterval(() => {
+
+    function updateProgressUI(lastT, attempts) {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       btnExact.textContent = `coalescing... (${elapsed}s)`;
       if (elapsed > 5) {
-        exactInfo.textContent = `still running -- larger n can take 15-20s or more (${elapsed}s elapsed)`;
+        let msg = `still running -- larger n or extreme weights can take a while (${elapsed}s elapsed)`;
+        if (lastT) msg += `, currently attempting ${lastT} half-sweeps (doubling ${attempts})`;
+        exactInfo.textContent = msg;
       }
-    }, 1000);
+    }
 
     try {
-      const res = await fetch("/api/exact", {
+      const startRes = await fetch("/api/exact/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ n, c_up: w.c1, c_down: w.c2 }),
       });
-      const data = await res.json();
-      clearInterval(progressTimer);
-      if (data.ok) {
-        totalSweeps = 0;
-        sweepCount.textContent = totalSweeps;
-        exactInfo.textContent = `exact: coalesced after ${data.info.half_sweeps} half-sweeps (${data.info.attempts} doublings)`;
-        sampler = null;
-        renderFrame(frameFromServerData(data.frame));
-        hudDevice.textContent = "server (numpy/torch, CFTP only)";
-        hudStatus.textContent = "exact sample";
-      } else {
-        exactInfo.textContent = `CFTP failed: ${data.error}`;
+      const startData = await startRes.json();
+      if (!startData.ok) {
+        exactInfo.textContent = `CFTP failed to start: ${startData.error}`;
         hudStatus.textContent = "ready";
+        btnExact.textContent = "exact sample (CFTP)";
+        busy = false;
+        updateDeltaDisplay();
+        return;
+      }
+
+      const jobId = startData.job_id;
+      let finished = false;
+      while (!finished) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const statusRes = await fetch(`/api/exact/status/${jobId}`);
+        const statusData = await statusRes.json();
+        if (!statusData.ok) {
+          exactInfo.textContent = `CFTP status check failed: ${statusData.error}`;
+          hudStatus.textContent = "ready";
+          finished = true;
+          break;
+        }
+        if (statusData.status === "running") {
+          updateProgressUI(statusData.last_T, statusData.attempts);
+        } else if (statusData.status === "done") {
+          totalSweeps = 0;
+          sweepCount.textContent = totalSweeps;
+          exactInfo.textContent = `exact: coalesced after ${statusData.info.half_sweeps} half-sweeps (${statusData.info.attempts} doublings)`;
+          sampler = null;
+          renderFrame(frameFromServerData(statusData.frame));
+          hudDevice.textContent = "server (numpy/torch, CFTP only)";
+          hudStatus.textContent = "exact sample";
+          finished = true;
+        } else if (statusData.status === "error") {
+          exactInfo.textContent = `CFTP failed: ${statusData.error}`;
+          hudStatus.textContent = "ready";
+          finished = true;
+        }
       }
     } catch (e) {
-      clearInterval(progressTimer);
       exactInfo.textContent = "CFTP request failed";
       hudStatus.textContent = "ready";
     }
