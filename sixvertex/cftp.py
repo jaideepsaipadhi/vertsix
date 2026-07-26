@@ -16,6 +16,14 @@ from .sampler import SixVertexSampler
 # via CFTP for the fully general model is an open problem, not just an
 # engineering gap -- do not extend this function to accept a1/a2/b1/b2
 # without a fresh monotonicity proof/verification first.
+#
+# Note: this proven-safe regime allows a=b=1 with ARBITRARY c1, c2 -- including
+# deep ferroelectric/antiferroelectric weights (|Delta|>1). CFTP remains
+# exactly correct there regardless of mixing time; slow mixing only means
+# more doublings (and more runtime) are needed before coalescence, never an
+# incorrect result. Verified directly: at a=b=1, c1=c2=sqrt(8) (Delta=-3,
+# deep antiferroelectric), CFTP coalesces correctly, just needing
+# substantially more half-sweeps than in the disordered regime.
 
 
 def _rand_field(master_seed: int, k: int, shape):
@@ -40,7 +48,7 @@ def _half_sweep(H, mask, rnd, p_up):
 
 def cftp_sample(n: int, c_up: float = 1.0, c_down: float = 1.0,
                  master_seed: int | None = None,
-                 initial_T: int = 16, max_T: int = 1 << 20,
+                 initial_T: int = 16, max_T: int = 1 << 21,
                  progress_cb=None):
     if master_seed is None:
         master_seed = np.random.randint(0, 2**31 - 1)

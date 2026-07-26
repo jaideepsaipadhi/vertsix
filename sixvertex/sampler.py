@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import base64
 
 try:
     import torch
@@ -39,16 +40,6 @@ class SixVertexSampler:
 
         i_idx, j_idx = np.meshgrid(np.arange(n + 1), np.arange(n + 1), indexing="ij")
         interior = (i_idx > 0) & (i_idx < n) & (j_idx > 0) & (j_idx < n)
-        # 4-coloring by (i%2, j%2), NOT 2-coloring by (i+j)%2: under the
-        # general-weight dynamics, a flip's acceptance ratio depends on the
-        # 4 faces surrounding the site, which extend to diagonal neighbors.
-        # Two diagonal neighbors share (i+j)%2 parity but are NOT
-        # independent (they share a face), so updating them simultaneously
-        # introduces a real, measurable bias -- verified empirically
-        # (2-coloring gave ~10x the sampling error of a known-correct
-        # sequential reference on specific configurations). 4-coloring by
-        # (i%2,j%2) guarantees same-color sites are never diagonal
-        # neighbors, restoring independence.
         color = (i_idx % 2) * 2 + (j_idx % 2)
         self._masks_np = [interior & (color == c) for c in range(4)]
         if self.use_torch:
@@ -79,12 +70,6 @@ class SixVertexSampler:
         return H
 
     def is_symmetric_regime(self) -> bool:
-        """True iff a1=a2=b1=b2=1 exactly -- the only regime CFTP/exact
-        sampling is proven-monotone for. This is stricter than just
-        "a1=a2 and b1=b2 at some shared value": cftp.py's acceptance rule
-        hardcodes no dependence on a or b at all, so it only targets the
-        correct measure when both are pinned to 1, not merely equal to
-        each other at an arbitrary shared value."""
         return self.a1 == 1.0 and self.a2 == 1.0 and self.b1 == 1.0 and self.b2 == 1.0
 
     def step(self, sweeps: int = 1):
@@ -93,33 +78,27 @@ class SixVertexSampler:
         else:
             self._step_numpy(sweeps)
 
-    def _build_weight_table(self):
-        # index = l*8 + t*4 + b*2 + r, one entry per of the 16 possible
-        # boolean combinations (only 6 are ever valid for a real height
-        # function; the rest are unreachable and filled with 1 as a
-        # harmless placeholder)
-        table = np.ones(16, dtype=np.float64)
-        table[0b0000] = self.a1
-        table[0b1111] = self.a2
-        table[0b1100] = self.b1
-        table[0b0011] = self.b2
-        table[0b0110] = self.c1
-        table[0b1001] = self.c2
-        return table
-
-    def _classify_face_np(self, tl, tr, bl, br, table):
+    def _classify_face_np(self, tl, tr, bl, br):
         top = tr - tl
         bottom = br - bl
         left = bl - tl
         right = br - tr
-        idx = ((left == 1).astype(np.int8) << 3) | ((top == 1).astype(np.int8) << 2) \
-              | ((bottom == 1).astype(np.int8) << 1) | (right == 1).astype(np.int8)
-        return table[idx]
+        t = (top == 1)
+        b = (bottom == 1)
+        l = (left == 1)
+        r = (right == 1)
+        w = np.ones_like(top, dtype=np.float64)
+        w = np.where((~l) & (~t) & (~b) & (~r), self.a1, w)
+        w = np.where(l & t & b & r, self.a2, w)
+        w = np.where(l & t & (~b) & (~r), self.b1, w)
+        w = np.where((~l) & (~t) & b & r, self.b2, w)
+        w = np.where((~l) & t & b & (~r), self.c1, w)
+        w = np.where(l & (~t) & (~b) & r, self.c2, w)
+        return w
 
     def _step_numpy(self, sweeps):
         H = self.H
         n = self.n
-        table = self._build_weight_table()
         for _ in range(sweeps):
             for mask in self._masks_np:
                 N = np.zeros_like(H); S = np.zeros_like(H)
@@ -140,14 +119,14 @@ class SixVertexSampler:
 
                 H_after = np.where(H == N + 1, N - 1, N + 1)
 
-                before = (self._classify_face_np(NW, N, W, H, table)
-                          * self._classify_face_np(N, NE, H, E, table)
-                          * self._classify_face_np(W, H, SW, S, table)
-                          * self._classify_face_np(H, E, S, SE, table))
-                after = (self._classify_face_np(NW, N, W, H_after, table)
-                         * self._classify_face_np(N, NE, H_after, E, table)
-                         * self._classify_face_np(W, H_after, SW, S, table)
-                         * self._classify_face_np(H_after, E, S, SE, table))
+                before = (self._classify_face_np(NW, N, W, H)
+                          * self._classify_face_np(N, NE, H, E)
+                          * self._classify_face_np(W, H, SW, S)
+                          * self._classify_face_np(H, E, S, SE))
+                after = (self._classify_face_np(NW, N, W, H_after)
+                         * self._classify_face_np(N, NE, H_after, E)
+                         * self._classify_face_np(W, H_after, SW, S)
+                         * self._classify_face_np(H_after, E, S, SE))
 
                 ratio = np.where(is_extremum, after / np.maximum(before, 1e-300), 1.0)
                 p_accept = ratio / (1.0 + ratio)
@@ -156,26 +135,23 @@ class SixVertexSampler:
                 H = np.where(do_flip, H_after, H)
         self.H = H
 
-    def _build_weight_table_torch(self, device, dtype):
-        import torch
-        table = torch.ones(16, device=device, dtype=dtype)
-        table[0b0000] = self.a1
-        table[0b1111] = self.a2
-        table[0b1100] = self.b1
-        table[0b0011] = self.b2
-        table[0b0110] = self.c1
-        table[0b1001] = self.c2
-        return table
-
-    def _classify_face_torch(self, tl, tr, bl, br, table):
+    def _classify_face_torch(self, tl, tr, bl, br):
         import torch
         top = tr - tl
         bottom = br - bl
         left = bl - tl
         right = br - tr
-        idx = ((left == 1).to(torch.int64) << 3) | ((top == 1).to(torch.int64) << 2) \
-              | ((bottom == 1).to(torch.int64) << 1) | (right == 1).to(torch.int64)
-        return table[idx]
+        t = (top == 1)
+        b = (bottom == 1)
+        l = (left == 1)
+        r = (right == 1)
+        w = torch.ones_like(top)
+        w = torch.where((~l) & (~t) & (~b) & (~r), torch.tensor(self.a1, device=w.device, dtype=w.dtype), w)
+        w = torch.where(l & t & b & r, torch.tensor(self.a2, device=w.device, dtype=w.dtype), w)
+        w = torch.where(l & t & (~b) & (~r), torch.tensor(self.b1, device=w.device, dtype=w.dtype), w)
+        w = torch.where((~l) & (~t) & b & r, torch.tensor(self.b2, device=w.device, dtype=w.dtype), w)
+        w = torch.where((~l) & t & b & (~r), torch.tensor(self.c1, device=w.device, dtype=w.dtype), w)
+        w = torch.where(l & (~t) & (~b) & r, torch.tensor(self.c2, device=w.device, dtype=w.dtype), w)
         return w
 
     def _step_torch(self, sweeps):
@@ -249,20 +225,14 @@ class SixVertexSampler:
         })
 
     def to_binary_frame(self):
-        """Compact encoding: height as int16 raw bytes, active as uint8 raw
-        bytes, both base64'd. Avoids the serialization/parsing overhead of
-        writing every number out as ASCII JSON digits -- at n=250 this
-        cuts payload size roughly 3x and step round-trip time roughly in
-        half in direct measurement (450KB/230ms -> ~150KB/~110ms)."""
-        import base64
-        Hn = self.height_array()
-        active = self.active_mask()
-        height_bytes = Hn.astype(np.int16).tobytes()
-        active_bytes = active.astype(np.uint8).tobytes()
-        return json.dumps({
+        Hn = self.height_array().astype(np.int16)
+        active = self.active_mask().astype(np.uint8)
+        height_bytes = Hn.tobytes()
+        active_bytes = active.tobytes()
+        return {
             "n": self.n,
             "height_b64": base64.b64encode(height_bytes).decode("ascii"),
             "active_b64": base64.b64encode(active_bytes).decode("ascii"),
             "min": float(Hn.min()),
             "max": float(Hn.max()),
-        })
+        }

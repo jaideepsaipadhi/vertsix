@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify, send_from_directory
-import gzip
 import os
 import threading
 
@@ -7,20 +6,6 @@ from sixvertex.sampler import SixVertexSampler
 from sixvertex.cftp import cftp_sample
 
 app = Flask(__name__, static_folder="static", static_url_path="")
-
-
-@app.after_request
-def compress_response(response):
-    accept_encoding = request.headers.get("Accept-Encoding", "")
-    if "gzip" not in accept_encoding.lower():
-        return response
-    if response.direct_passthrough or response.content_length is not None and response.content_length < 500:
-        return response
-    response.data = gzip.compress(response.get_data())
-    response.headers["Content-Encoding"] = "gzip"
-    response.headers["Content-Length"] = len(response.data)
-    return response
-
 
 _lock = threading.Lock()
 _state = {"sampler": None}
@@ -75,6 +60,13 @@ def api_step():
 def api_exact():
     # Deliberately does NOT accept a1/a2/b1/b2 -- CFTP here is only proven
     # monotone for the a1=a2=b1=b2=1 (c-bias only) regime. See cftp.py.
+    #
+    # max_T raised to 1<<21: verified that this regime remains exactly
+    # correct at arbitrary |Delta| (including deep antiferroelectric,
+    # e.g. Delta=-3), but requires substantially more half-sweeps to
+    # coalesce there -- the old 1<<18 cap could cut off large-n runs in
+    # that regime before they finished, incorrectly reporting failure on
+    # what is actually just a slower (but still correct) computation.
     data = request.get_json(force=True)
     n = int(data.get("n", 40))
     n = max(4, min(n, 250))
@@ -84,7 +76,7 @@ def api_exact():
     try:
         with _lock:
             H, info = cftp_sample(n=n, c_up=c_up, c_down=c_down,
-                                   master_seed=seed, max_T=1 << 18)
+                                   master_seed=seed, max_T=1 << 21)
             s = SixVertexSampler(n=n, c_up=c_up, c_down=c_down)
             if s.use_torch:
                 import torch

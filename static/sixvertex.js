@@ -115,3 +115,4 @@ class SixVertexJS {
     return { min, max };
   }
 }
+

@@ -22,6 +22,7 @@
   const c2Out = document.getElementById("c2-weight-out");
   const deltaDisplay = document.getElementById("delta-display");
   const exactGateNote = document.getElementById("exact-gate-note");
+  const orderedRegimeNote = document.getElementById("ordered-regime-note");
   const speedSlider = document.getElementById("speed");
   const speedOut = document.getElementById("speed-out");
   const btnInit = document.getElementById("btn-init");
@@ -62,6 +63,15 @@
   let totalSweeps = 0;
   let busy = false;
 
+  const VERTEX6_COLORS = {
+    a1: [232, 92, 92],
+    a2: [232, 160, 92],
+    b1: [232, 220, 92],
+    b2: [180, 92, 232],
+    c1: [127, 216, 232],
+    c2: [92, 140, 232],
+  };
+
   function currentWeights() {
     return {
       a1: parseFloat(a1Slider.value), a2: parseFloat(a2Slider.value),
@@ -72,6 +82,25 @@
 
   function isExactSafe(w) {
     return w.a1 === 1 && w.a2 === 1 && w.b1 === 1 && w.b2 === 1;
+  }
+
+  function pairedSlider(sliderA, outA, sliderB, outB) {
+    sliderA.addEventListener("input", () => {
+      outA.textContent = parseFloat(sliderA.value).toFixed(2);
+      if (symmetricCheck.checked) {
+        sliderB.value = sliderA.value;
+        outB.textContent = parseFloat(sliderB.value).toFixed(2);
+      }
+      updateDeltaDisplay();
+    });
+    sliderB.addEventListener("input", () => {
+      outB.textContent = parseFloat(sliderB.value).toFixed(2);
+      if (symmetricCheck.checked) {
+        sliderA.value = sliderB.value;
+        outA.textContent = parseFloat(sliderA.value).toFixed(2);
+      }
+      updateDeltaDisplay();
+    });
   }
 
   function updateDeltaDisplay() {
@@ -85,6 +114,8 @@
     if (w.a1 === 1 && w.a2 === 1 && w.b1 === 1 && w.b2 === 1 && w.c1 === 1 && w.c2 === 1) regime += " (uniform weights)";
     deltaDisplay.textContent = `${delta.toFixed(2)} \u00b7 ${regime}`;
 
+    orderedRegimeNote.style.display = Math.abs(delta) > 1 ? "block" : "none";
+
     const safe = isExactSafe(w);
     btnExact.disabled = !safe;
     btnExact.style.opacity = safe ? "1" : "0.4";
@@ -92,30 +123,11 @@
     exactGateNote.style.display = safe ? "none" : "block";
   }
 
-  function pairedSlider(primary, primaryOut, secondary, secondaryOut) {
-    primary.addEventListener("input", () => {
-      primaryOut.textContent = parseFloat(primary.value).toFixed(2);
-      if (symmetricCheck.checked) {
-        secondary.value = primary.value;
-        secondaryOut.textContent = parseFloat(secondary.value).toFixed(2);
-      }
-      updateDeltaDisplay();
-    });
-  }
-
   nSlider.addEventListener("input", () => (nOut.textContent = nSlider.value));
   pairedSlider(a1Slider, a1Out, a2Slider, a2Out);
-  pairedSlider(a2Slider, a2Out, a1Slider, a1Out);
   pairedSlider(b1Slider, b1Out, b2Slider, b2Out);
-  pairedSlider(b2Slider, b2Out, b1Slider, b1Out);
   pairedSlider(c1Slider, c1Out, c2Slider, c2Out);
-  pairedSlider(c2Slider, c2Out, c1Slider, c1Out);
-
   symmetricCheck.addEventListener("change", () => {
-    const disabled = false; // keep all sliders independently draggable even in symmetric mode
-    a2Slider.disabled = disabled;
-    b2Slider.disabled = disabled;
-    c2Slider.disabled = disabled;
     if (symmetricCheck.checked) {
       a2Slider.value = a1Slider.value; a2Out.textContent = parseFloat(a2Slider.value).toFixed(2);
       b2Slider.value = b1Slider.value; b2Out.textContent = parseFloat(b2Slider.value).toFixed(2);
@@ -123,7 +135,6 @@
       updateDeltaDisplay();
     }
   });
-
   speedSlider.addEventListener("input", () => (speedOut.textContent = speedSlider.value));
   updateDeltaDisplay();
 
@@ -174,6 +185,18 @@
     ];
   }
 
+  function classifyFaceLocal(tl, tr, bl, br) {
+    const top = tr - tl, bottom = br - bl, left = bl - tl, right = br - tr;
+    const t = top === 1, b = bottom === 1, l = left === 1, r = right === 1;
+    if (!l && !t && !b && !r) return "a1";
+    if (l && t && b && r) return "a2";
+    if (l && t && !b && !r) return "b1";
+    if (!l && !t && b && r) return "b2";
+    if (!l && t && b && !r) return "c1";
+    if (l && !t && !b && r) return "c2";
+    return "a1";
+  }
+
   function frameFromSampler(s) {
     const size = s.size;
     const { min, max } = s.minMax();
@@ -199,27 +222,6 @@
     };
   }
 
-  const VERTEX6_COLORS = {
-    a1: [232, 92, 92],
-    a2: [232, 160, 92],
-    b1: [232, 220, 92],
-    c1: [127, 216, 232],
-    c2: [92, 140, 232],
-    b2: [180, 92, 232],
-  };
-
-  function classifyFaceType(tl, tr, bl, br) {
-    const top = tr - tl, bottom = br - bl, left = bl - tl, right = br - tr;
-    const t = top === 1, b = bottom === 1, l = left === 1, r = right === 1;
-    if (!l && !t && !b && !r) return "a1";
-    if (l && t && b && r) return "a2";
-    if (l && t && !b && !r) return "b1";
-    if (!l && !t && b && r) return "b2";
-    if (!l && t && b && !r) return "c1";
-    if (l && !t && !b && r) return "c2";
-    return "a1";
-  }
-
   function buildOffscreen(frame, mode) {
     const n = frame.n;
     off.width = n;
@@ -243,7 +245,7 @@
     } else if (mode === "vertex6") {
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
-          const type = classifyFaceType(frame.get(i, j), frame.get(i, j + 1), frame.get(i + 1, j), frame.get(i + 1, j + 1));
+          const type = classifyFaceLocal(frame.get(i, j), frame.get(i, j + 1), frame.get(i + 1, j), frame.get(i + 1, j + 1));
           const [r, g, b] = VERTEX6_COLORS[type];
           const idx = (i * n + j) * 4;
           img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = b;
@@ -438,6 +440,13 @@
     }, remaining);
   }
 
+  const isTouchOnly = "ontouchstart" in window && !window.matchMedia("(pointer: fine)").matches;
+  if (isTouchOnly) {
+    nSlider.value = "40"; nOut.textContent = "40";
+    speedSlider.value = "3"; speedOut.textContent = "3";
+    dinfo("mobile/touch device detected: reduced default n=40, sweeps=3 for performance");
+  }
+
   function localInit() {
     busy = true;
     hudStatus.textContent = "initializing...";
@@ -505,14 +514,16 @@
     btnExact.disabled = true;
     hudStatus.textContent = "CFTP running (server)...";
     const n = parseInt(nSlider.value, 10);
+
     const startTime = Date.now();
     const progressTimer = setInterval(() => {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
       btnExact.textContent = `coalescing... (${elapsed}s)`;
       if (elapsed > 5) {
         exactInfo.textContent = `still running -- larger n can take 15-20s or more (${elapsed}s elapsed)`;
       }
-    }, 500);
+    }, 1000);
+
     try {
       const res = await fetch("/api/exact", {
         method: "POST",
@@ -520,13 +531,13 @@
         body: JSON.stringify({ n, c_up: w.c1, c_down: w.c2 }),
       });
       const data = await res.json();
+      clearInterval(progressTimer);
       if (data.ok) {
         totalSweeps = 0;
         sweepCount.textContent = totalSweeps;
         exactInfo.textContent = `exact: coalesced after ${data.info.half_sweeps} half-sweeps (${data.info.attempts} doublings)`;
-        const frameData = JSON.parse(data.frame);
         sampler = null;
-        renderFrame(frameFromServerData(frameData));
+        renderFrame(frameFromServerData(data.frame));
         hudDevice.textContent = "server (numpy/torch, CFTP only)";
         hudStatus.textContent = "exact sample";
       } else {
@@ -534,10 +545,10 @@
         hudStatus.textContent = "ready";
       }
     } catch (e) {
+      clearInterval(progressTimer);
       exactInfo.textContent = "CFTP request failed";
       hudStatus.textContent = "ready";
     }
-    clearInterval(progressTimer);
     btnExact.textContent = "exact sample (CFTP)";
     busy = false;
     updateDeltaDisplay();
@@ -565,6 +576,14 @@
           rects += `<rect x="${j * cell}" y="${i * cell}" width="${cell}" height="${cell}" fill="${fill}"/>`;
         }
       }
+    } else if (viewMode.value === "vertex6") {
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          const type = classifyFaceLocal(lastFrame.get(i, j), lastFrame.get(i, j + 1), lastFrame.get(i + 1, j), lastFrame.get(i + 1, j + 1));
+          const [r, g, b] = VERTEX6_COLORS[type];
+          rects += `<rect x="${j * cell}" y="${i * cell}" width="${cell}" height="${cell}" fill="rgb(${r},${g},${b})"/>`;
+        }
+      }
     } else {
       const min = lastFrame.min, max = lastFrame.max;
       const span = Math.max(1, max - min);
@@ -588,19 +607,6 @@
     URL.revokeObjectURL(url);
   });
 
-  function applyMobileDefaults() {
-    const isNarrow = window.innerWidth < 700;
-    const isTouchOnly = "ontouchstart" in window && !window.matchMedia("(pointer: fine)").matches;
-    if (isNarrow || isTouchOnly) {
-      nSlider.value = "40";
-      nOut.textContent = "40";
-      speedSlider.value = "3";
-      speedOut.textContent = "3";
-      dinfo("mobile/touch device detected: reduced default n=40, sweeps=3 for performance");
-    }
-  }
-
-  applyMobileDefaults();
   sizeStage();
   localInit();
   setTimeout(hideLoadingScreen, 8000);

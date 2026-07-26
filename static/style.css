@@ -74,6 +74,9 @@
 }
 
 #loading-hex {
+  width: 5.5em;
+  height: 5.5em;
+  flex-shrink: 0;
   color: var(--accent);
   overflow: visible;
   animation: hexSpin 9s linear infinite;
@@ -86,8 +89,6 @@
 
 .dot-group .dot {
   fill: var(--accent);
-  transform-box: fill-box;
-  transform-origin: center;
   animation: dotPulse 1.6s ease-in-out infinite;
 }
 .dot-group .ring0 { animation-delay: 0s; }
@@ -112,8 +113,8 @@
 }
 
 @keyframes dotPulse {
-  0%, 100% { opacity: 0.3; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1.15); }
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
 }
 
 @keyframes dots {
@@ -167,7 +168,6 @@ header h1 {
   background-clip: text;
   color: transparent;
 }
-header h1 .dim { -webkit-text-fill-color: var(--text-dim); color: var(--text-dim); }
 
 .subtitle {
   font-family: var(--mono);
@@ -254,10 +254,10 @@ main {
   background: linear-gradient(180deg, var(--panel2), var(--panel));
   border: 0.07em solid var(--line);
   border-radius: 0.4em;
-  padding: 0.8em;
+  padding: 0.5em;
   display: flex;
   flex-direction: column;
-  gap: 0.6em;
+  gap: 0.3em;
   overflow-y: auto;
   min-height: 0;
 }
@@ -266,10 +266,10 @@ main {
   background: rgba(0,0,0,0.18);
   border: 0.07em solid var(--line);
   border-radius: 0.35em;
-  padding: 0.55em 0.7em;
+  padding: 0.3em 0.5em;
   display: flex;
   flex-direction: column;
-  gap: 0.6em;
+  gap: 0.28em;
 }
 
 .section-title {
@@ -289,14 +289,13 @@ main {
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  margin-bottom: 0.3em;
+  margin-bottom: 0.1em;
 }
 
 .field input[type="range"] {
   width: 100%;
   accent-color: var(--accent);
   height: 0.3em;
-  touch-action: manipulation;
 }
 
 .field output {
@@ -304,7 +303,7 @@ main {
   font-family: var(--mono);
   font-size: 0.9em;
   color: var(--accent);
-  margin-top: 0.15em;
+  margin-top: 0.05em;
   font-weight: 600;
 }
 
@@ -333,10 +332,9 @@ button {
   font-size: 0.82em;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  padding: 0.6em 0.4em;
+  padding: 0.35em 0.4em;
   border-radius: 0.35em;
   cursor: pointer;
-  touch-action: manipulation;
   transition: border-color 0.15s, color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 button:hover {
@@ -379,25 +377,15 @@ button.exact:disabled {
 .counter span { color: var(--accent); font-weight: 600; }
 
 .note {
-  font-size: 0.76em;
-  line-height: 1.4;
+  font-size: 0.66em;
+  line-height: 1.25;
   color: var(--text-dim);
   margin: 0;
 }
 .note strong { color: var(--accent-soft); }
 
-@media (max-height: 56em) {
-  .panel { padding: 0.5em; gap: 0.3em; }
-  .section { padding: 0.3em 0.5em; gap: 0.28em; }
-  .field label { margin-bottom: 0.1em; }
-  .field output { margin-top: 0.05em; }
-  .row { gap: 0.25em; }
-  button { padding: 0.35em 0.4em; }
-  .note { font-size: 0.66em; line-height: 1.25; }
-}
-
 @media (max-height: 48em) {
-  .note:not(#exact-gate-note) { display: none; }
+  .note:not(#exact-gate-note):not(#ordered-regime-note) { display: none; }
   .section-title { padding-bottom: 0.15em; font-size: 0.68em; }
   .field label { font-size: 0.78em; }
   .field { margin-bottom: 0.05em; }
@@ -407,5 +395,5 @@ button.exact:disabled {
   .section-title { display: none; }
   .section { padding: 0.28em 0.4em; gap: 0.2em; }
   button { padding: 0.3em 0.3em; }
-  #exact-gate-note { font-size: 0.6em; }
+  #exact-gate-note, #ordered-regime-note { font-size: 0.6em; }
 }
