@@ -63,7 +63,7 @@
   let totalSweeps = 0;
   let busy = false;
 
-  const VERTEX6_COLORS = {
+  const DEFAULT_VERTEX6_COLORS = {
     a1: [232, 92, 92],
     a2: [232, 160, 92],
     b1: [232, 220, 92],
@@ -71,6 +71,15 @@
     c1: [127, 216, 232],
     c2: [92, 140, 232],
   };
+  let VERTEX6_COLORS = { ...DEFAULT_VERTEX6_COLORS };
+
+  function hexToRgb(hex) {
+    const v = parseInt(hex.slice(1), 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  }
+  function rgbToHex([r, g, b]) {
+    return "#" + [r, g, b].map(x => x.toString(16).padStart(2, "0")).join("");
+  }
 
   function currentWeights() {
     return {
@@ -360,6 +369,27 @@
     vertex6Legend.style.display = viewMode.value === "vertex6" ? "block" : "none";
     draw();
   });
+
+  for (const type of Object.keys(DEFAULT_VERTEX6_COLORS)) {
+    const input = document.getElementById(`color-${type}`);
+    if (input) {
+      input.addEventListener("input", () => {
+        VERTEX6_COLORS[type] = hexToRgb(input.value);
+        if (viewMode.value === "vertex6") draw();
+      });
+    }
+  }
+  const btnResetColors = document.getElementById("btn-reset-colors");
+  if (btnResetColors) {
+    btnResetColors.addEventListener("click", () => {
+      VERTEX6_COLORS = { ...DEFAULT_VERTEX6_COLORS };
+      for (const type of Object.keys(DEFAULT_VERTEX6_COLORS)) {
+        const input = document.getElementById(`color-${type}`);
+        if (input) input.value = rgbToHex(DEFAULT_VERTEX6_COLORS[type]);
+      }
+      if (viewMode.value === "vertex6") draw();
+    });
+  }
 
   function cssPos(e) {
     const rect = canvas.getBoundingClientRect();

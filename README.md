@@ -55,14 +55,30 @@ the smoothed color gradient.
 
 When |Delta| > 1 (ferroelectric or antiferroelectric regime), **live
 sampling ("Run") will look visually stuck** — this is expected, verified
-physics, not a bug. We confirmed this directly: comparing mixing behavior
-across Delta = 0.25, 0.5 (disordered, both mix in a healthy, improving
-way) versus Delta = -1.5, -3 (antiferroelectric, both get stuck almost
-immediately regardless of how extreme), the transition happens precisely
-at the known theoretical phase boundary |Delta|=1. This is critical
-slowing down for local Monte Carlo dynamics in ordered phases, a
-well-documented phenomenon in the literature, not something specific to
-this tool.
+physics, not a bug in the underlying algorithm. We confirmed this two
+separate ways:
+
+1. Comparing mixing behavior across Delta = 0.25, 0.5 (disordered, both
+   mix in a healthy, improving way) versus Delta = -1.5, -3
+   (antiferroelectric, both get stuck almost immediately regardless of how
+   extreme), the transition happens precisely at the known theoretical
+   phase boundary |Delta|=1.
+2. At a1=a2=b1=b2=1, c1=c2=sqrt(8) (Delta=-3), we brute-force-verified the
+   *algorithm itself* is exactly correct at small n (n=4, max deviation
+   0.16% from the true distribution) — so there is no bug in the
+   acceptance-ratio computation. But at n=30, running the same dynamics
+   for 30,000 sweeps across 3 independent seeds, the fraction of
+   locally-flippable sites stayed locked around 3-4%, nowhere near the
+   true equilibrium value of ~25% (confirmed against 8 independent exact
+   CFTP samples at the same n and weights). **This means the mixing
+   problem is already severe well before "large" n — it is not something
+   that only shows up once n gets big.** An earlier version of this
+   document said the opposite; that was wrong, and this is the corrected
+   version.
+
+This is critical slowing down for local Monte Carlo dynamics in ordered
+phases, a well-documented phenomenon in the literature, not something
+specific to this tool.
 
 **Exact Sample (CFTP) still gives a mathematically correct result in this
 regime** — CFTP's correctness never depends on mixing time, only its
@@ -148,6 +164,11 @@ requirements.txt
 ```
 
 ## Exact sampling (CFTP)
+
+For a precise, line-by-line-checkable specification of exactly what this
+computes (state space, move set, transition probability, coupling,
+doubling scheme, and exactly what's proven vs. empirically verified), see
+[ALGORITHM.md](ALGORITHM.md).
 
 The **exact sample (CFTP)** button runs Coupling From The Past
 (Propp-Wilson): two coupled copies of the corner-flip chain start from the

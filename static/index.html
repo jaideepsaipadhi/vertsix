@@ -78,13 +78,14 @@
               <option value="vertex6">6 vertex types (colored)</option>
             </select>
           </div>
-          <div id="vertex6-legend" style="display:none;font-family:var(--mono);font-size:0.78em;line-height:1.7;margin-top:0.4em;">
-            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#e85c5c;margin-right:0.5em;border-radius:2px;"></span>a<sub>1</sub> (empty vertex)</div>
-            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#e8a05c;margin-right:0.5em;border-radius:2px;"></span>a<sub>2</sub> (both paths through)</div>
-            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#e8dc5c;margin-right:0.5em;border-radius:2px;"></span>b<sub>1</sub> (vertical through)</div>
-            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#b45ce8;margin-right:0.5em;border-radius:2px;"></span>b<sub>2</sub> (horizontal through)</div>
-            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#7fd8e8;margin-right:0.5em;border-radius:2px;"></span>c<sub>1</sub> (turn)</div>
-            <div><span style="display:inline-block;width:0.9em;height:0.9em;background:#5c8ce8;margin-right:0.5em;border-radius:2px;"></span>c<sub>2</sub> (turn, other way)</div>
+          <div id="vertex6-legend" style="display:none;font-family:var(--mono);font-size:0.78em;line-height:2.1;margin-top:0.4em;">
+            <div><input type="color" id="color-a1" value="#e85c5c" style="vertical-align:middle;margin-right:0.5em;width:1.6em;height:1.6em;border:none;background:none;padding:0;cursor:pointer;"/>a<sub>1</sub> (empty vertex)</div>
+            <div><input type="color" id="color-a2" value="#e8a05c" style="vertical-align:middle;margin-right:0.5em;width:1.6em;height:1.6em;border:none;background:none;padding:0;cursor:pointer;"/>a<sub>2</sub> (both paths through)</div>
+            <div><input type="color" id="color-b1" value="#e8dc5c" style="vertical-align:middle;margin-right:0.5em;width:1.6em;height:1.6em;border:none;background:none;padding:0;cursor:pointer;"/>b<sub>1</sub> (vertical through)</div>
+            <div><input type="color" id="color-b2" value="#b45ce8" style="vertical-align:middle;margin-right:0.5em;width:1.6em;height:1.6em;border:none;background:none;padding:0;cursor:pointer;"/>b<sub>2</sub> (horizontal through)</div>
+            <div><input type="color" id="color-c1" value="#7fd8e8" style="vertical-align:middle;margin-right:0.5em;width:1.6em;height:1.6em;border:none;background:none;padding:0;cursor:pointer;"/>c<sub>1</sub> (turn)</div>
+            <div><input type="color" id="color-c2" value="#5c8ce8" style="vertical-align:middle;margin-right:0.5em;width:1.6em;height:1.6em;border:none;background:none;padding:0;cursor:pointer;"/>c<sub>2</sub> (turn, other way)</div>
+            <button id="btn-reset-colors" style="margin-top:0.3em;font-size:0.85em;">reset colors</button>
           </div>
         </div>
 
@@ -194,6 +195,6 @@
   </div>
 
 <script src="sixvertex.js?v=1"></script>
-<script src="draw.js?v=23"></script>
+<script src="draw.js?v=24"></script>
 </body>
 </html>
