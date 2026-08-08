@@ -89,8 +89,15 @@
     };
   }
 
-  function isExactSafe(w) {
-    return w.a1 === 1 && w.a2 === 1 && w.b1 === 1 && w.b2 === 1;
+  const MAX_EXACT_N = 14;
+
+  function isExactSafe(w, n) {
+    // Exact sequential sampling (server-side) is correct for ARBITRARY
+    // weights, but its cost is exponential in n. CFTP is only valid at the
+    // uniform point. So: small n is always fine; large n only at uniform.
+    if (n <= MAX_EXACT_N) return true;
+    return w.a1 === 1 && w.a2 === 1 && w.b1 === 1 && w.b2 === 1
+        && w.c1 === 1 && w.c2 === 1;
   }
 
   function pairedSlider(sliderA, outA, sliderB, outB) {
@@ -125,14 +132,24 @@
 
     orderedRegimeNote.style.display = Math.abs(delta) > 1 ? "block" : "none";
 
-    const safe = isExactSafe(w);
+    const n = parseInt(nSlider.value, 10);
+    const safe = isExactSafe(w, n);
     btnExact.disabled = !safe;
     btnExact.style.opacity = safe ? "1" : "0.4";
     btnExact.style.cursor = safe ? "pointer" : "not-allowed";
     exactGateNote.style.display = safe ? "none" : "block";
+    if (!safe) {
+      exactGateNote.innerHTML =
+        `Exact sampling for non-uniform weights uses an exact sequential ` +
+        `(transfer-matrix) method whose cost grows exponentially with n, so ` +
+        `it is limited to n &le; ${MAX_EXACT_N}. Beyond that, the only exact ` +
+        `method available (CFTP) is valid solely at the uniform point ` +
+        `(all weights = 1). Reduce n to ${MAX_EXACT_N} or below, or set all ` +
+        `weights to 1.00.`;
+    }
   }
 
-  nSlider.addEventListener("input", () => (nOut.textContent = nSlider.value));
+  nSlider.addEventListener("input", () => { nOut.textContent = nSlider.value; updateDeltaDisplay(); });
   pairedSlider(a1Slider, a1Out, a2Slider, a2Out);
   pairedSlider(b1Slider, b1Out, b2Slider, b2Out);
   pairedSlider(c1Slider, c1Out, c2Slider, c2Out);
@@ -536,7 +553,7 @@
   btnExact.addEventListener("click", async () => {
     if (busy) return;
     const w = currentWeights();
-    if (!isExactSafe(w)) return;
+    if (!isExactSafe(w, parseInt(nSlider.value, 10))) return;
     playing = false;
     btnPlay.classList.remove("active");
     btnPlay.textContent = "run";
@@ -561,7 +578,7 @@
       const startRes = await fetch("/api/exact/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ n, c_up: w.c1, c_down: w.c2 }),
+        body: JSON.stringify({ n, c_up: w.c1, c_down: w.c2, a1: w.a1, a2: w.a2, b1: w.b1, b2: w.b2 }),
       });
       const startData = await startRes.json();
       if (!startData.ok) {
@@ -590,7 +607,14 @@
         } else if (statusData.status === "done") {
           totalSweeps = 0;
           sweepCount.textContent = totalSweeps;
-          exactInfo.textContent = `exact: coalesced after ${statusData.info.half_sweeps} half-sweeps (${statusData.info.attempts} doublings)`;
+          const inf = statusData.info || {};
+          if (inf.method === "exact-sequential") {
+            exactInfo.textContent =
+              `exact sample (sequential transfer-matrix method \u2014 valid for all weights)`;
+          } else {
+            exactInfo.textContent =
+              `exact: coalesced after ${inf.half_sweeps} half-sweeps (${inf.attempts} doublings)`;
+          }
           sampler = null;
           renderFrame(frameFromServerData(statusData.frame));
           hudDevice.textContent = "server (numpy/torch, CFTP only)";

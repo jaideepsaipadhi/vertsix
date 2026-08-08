@@ -163,7 +163,36 @@ static/index.html, style.css, draw.js   Browser UI
 requirements.txt
 ```
 
-## Exact sampling (CFTP)
+## Exact sampling
+
+**Correction, August 2026:** this tool previously claimed CFTP produced
+exact samples whenever a1=a2=b1=b2=1, for any c1, c2. That was wrong. CFTP's
+move uses `p_up = c1/(c1+c2)`, which only targets the correct measure at the
+uniform point (all weights 1); away from it the sampled distribution
+deviates from the truth by 4% at c1=1.2, 21% at c1=2.0, and 64% at
+c1=c2=sqrt(8) (measured against brute-force enumeration at n=4). The bug
+went unnoticed because the error vanishes smoothly at the uniform point, and
+because MCMC and CFTP were checked against each other while sharing the same
+flawed move.
+
+Exact sampling now works as follows:
+
+- **n <= 14, any weights:** exact *sequential* sampling via a
+  transfer-matrix decomposition (`sixvertex/exact.py`). Rows are drawn one
+  at a time from their exact conditional distributions. No Markov chain, so
+  no mixing time and no monotonicity requirement -- it is exact even deep in
+  the ferroelectric/antiferroelectric regimes where local MCMC freezes.
+  Verified against brute force to machine precision.
+- **n > 14, uniform weights only:** CFTP (`sixvertex/cftp.py`), which is
+  valid at that point.
+- **n > 14, non-uniform weights:** *no exact method is available.* The tool
+  refuses and says so, rather than returning a number it cannot justify.
+  Sequential sampling costs `C(n, n/2)` and CFTP is invalid there. Closing
+  this gap is an open problem, not an engineering task.
+
+See [ALGORITHM.md](ALGORITHM.md) for the full specification of both methods.
+
+## CFTP details
 
 For a precise, line-by-line-checkable specification of exactly what this
 computes (state space, move set, transition probability, coupling,
