@@ -167,6 +167,15 @@
   let dpr = 1;
   function sizeStage() {
     const mainEl = stage.parentElement;
+
+    // Clear any inline size we set on a previous call BEFORE measuring.
+    // Otherwise we measure the width we ourselves pinned last time, so the
+    // stage can never grow when the window is enlarged -- it stays frozen at
+    // whatever size it had on first load. (Regression: resizing 1200 -> 2560
+    // left the canvas stuck at 905px.)
+    stage.style.width = "";
+    stage.style.height = "";
+
     const rect = stage.getBoundingClientRect();
     const availWidth = rect.width > 10 ? rect.width : mainEl.clientWidth;
     const availHeight = mainEl.clientHeight;

@@ -260,6 +260,47 @@ def test_cftp_only_correct_at_uniform_point():
     assert cftp_style_empirical(2.0, 1.0) > 0.05, "should be visibly wrong away from it"
 
 
+def test_only_weight_products_matter():
+    """Under DWBC only the products a1*a2, b1*b2, c1*c2 affect the measure.
+
+    Consequence of the conservation law: (c1=2, c2=0.5) and (c1=1, c2=1)
+    are the SAME distribution. This is a trap when designing tests -- two
+    "different" weight sets can be secretly identical, which will look like
+    a bug (or hide one). It is also why Delta depends only on the products.
+    """
+    n = 5
+    _, d_a, _ = exact_distribution(n, {**UNIFORM, "c1": 2.0, "c2": 0.5})
+    _, d_b, _ = exact_distribution(n, UNIFORM)
+    assert np.max(np.abs(d_a - d_b)) < 1e-12, "equal products must give equal measures"
+
+    _, d_c, _ = exact_distribution(n, {**UNIFORM, "c1": 2.0, "c2": 2.0})
+    assert np.max(np.abs(d_a - d_c)) > 1e-3, "different products must differ"
+
+
+def test_observables_unbiased_across_seeds():
+    """Expected values must match theory, checked across many seeds.
+
+    Single-seed z-scores fluctuate: a lone |z| ~ 2.7 is normal. Bias shows
+    up as a consistent sign/magnitude across independent seeds, so this
+    test averages over seeds rather than trusting one.
+    """
+    n = 5
+    w = DELTA_M3
+    cfgs, pr, _ = exact_distribution(n, w)
+    expected_total = float(sum(p * H.sum() for p, H in zip(pr, cfgs)))
+    S = ExactSampler(n, w)
+    zs = []
+    for seed in range(8):
+        rng = np.random.default_rng(900 + seed)
+        totals = [S.sample(rng).sum() for _ in range(2500)]
+        m = float(np.mean(totals))
+        se = float(np.std(totals)) / math.sqrt(len(totals))
+        zs.append((m - expected_total) / se if se > 0 else 0.0)
+    zs = np.array(zs)
+    assert abs(zs.mean()) < 1.0, f"systematic bias: mean z = {zs.mean()}"
+    assert np.mean(np.abs(zs) > 3) < 0.3, f"too many outliers: {zs}"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
