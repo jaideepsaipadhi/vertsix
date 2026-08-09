@@ -262,6 +262,25 @@ types (colored)** to see the actual underlying vertex configuration.
   non-local moves — see "Known limitation" above before attempting this;
   it's real research, not a quick fix.
 
+## Tests
+
+```bash
+python3 tests/test_sampler.py        # no pytest needed
+python3 -m pytest tests/ -v          # or with pytest
+```
+
+Every correctness test compares against **brute-force enumeration**, not
+against the other sampler. That matters: this project has shipped two subtle
+correctness bugs that survived for months precisely because the MCMC and
+CFTP paths were validated against each other while sharing the same flawed
+assumption. Cross-checking two implementations of the same mistake proves
+nothing.
+
+The suite also pins down a *non*-bug: under DWBC the differences
+N(a1)-N(a2), N(b1)-N(b2), N(c1)-N(c2) are conserved, so swapping a1 and a2
+leaves the distribution exactly unchanged. Naive "boost one weight and see
+which vertex type grows" tests flag this as a wiring error. It isn't.
+
 ## Contributing
 
 Issues and pull requests are welcome. Please include your `n`, weights,

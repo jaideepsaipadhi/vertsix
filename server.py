@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, send_from_directory
+import math
 import os
 import threading
 import time
@@ -112,21 +113,65 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+class BadRequest(Exception):
+    """Client sent something we can't act on. Turned into a 400."""
+
+
+def _parse_request(data, n_min=4, n_max=400, n_default=40):
+    """Parse and validate n + the six weights from a request body.
+
+    Without this, a non-numeric field raised a ValueError inside the view and
+    surfaced as a 500 with a stack trace, and non-positive weights were
+    accepted outright -- the Boltzmann distribution isn't defined for those,
+    so the sampler would return a configuration that looked fine but meant
+    nothing.
+    """
+    if not isinstance(data, dict):
+        raise BadRequest("request body must be a JSON object")
+
+    def num(name, default):
+        v = data.get(name, default)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            raise BadRequest(f"{name} must be a number, got {v!r}")
+        if not math.isfinite(v):
+            raise BadRequest(f"{name} must be finite, got {v!r}")
+        return v
+
+    try:
+        n_raw = data.get("n", n_default)
+        n = int(n_raw)
+    except (TypeError, ValueError):
+        raise BadRequest(f"n must be an integer, got {data.get('n')!r}")
+    if n < n_min or n > n_max:
+        raise BadRequest(f"n must be between {n_min} and {n_max}, got {n}")
+
+    weights = {
+        "a1": num("a1", 1.0), "a2": num("a2", 1.0),
+        "b1": num("b1", 1.0), "b2": num("b2", 1.0),
+        "c1": num("c_up", 1.0), "c2": num("c_down", 1.0),
+    }
+    for name, v in weights.items():
+        if v <= 0.0:
+            raise BadRequest(
+                f"weight {name} must be strictly positive (the Boltzmann "
+                f"distribution is undefined otherwise), got {v}"
+            )
+    return n, weights, data.get("seed")
+
+
 @app.route("/api/init", methods=["POST"])
 def api_init():
-    data = request.get_json(force=True)
-    n = int(data.get("n", 40))
-    c_up = float(data.get("c_up", 1.0))
-    c_down = float(data.get("c_down", 1.0))
-    a1 = float(data.get("a1", 1.0))
-    a2 = float(data.get("a2", 1.0))
-    b1 = float(data.get("b1", 1.0))
-    b2 = float(data.get("b2", 1.0))
-    seed = data.get("seed")
-    n = max(4, min(n, 400))
+    try:
+        data = request.get_json(force=True, silent=True)
+        n, w, seed = _parse_request(data)
+    except BadRequest as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
     with _lock:
         s = SixVertexSampler(
-            n=n, c_up=c_up, c_down=c_down, a1=a1, a2=a2, b1=b1, b2=b2, seed=seed
+            n=n, c_up=w["c1"], c_down=w["c2"],
+            a1=w["a1"], a2=w["a2"], b1=w["b1"], b2=w["b2"], seed=seed
         )
         _state["sampler"] = s
         info = {
@@ -140,8 +185,13 @@ def api_init():
 
 @app.route("/api/step", methods=["POST"])
 def api_step():
-    data = request.get_json(force=True)
-    sweeps = int(data.get("sweeps", 1))
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "request body must be a JSON object"}), 400
+    try:
+        sweeps = int(data.get("sweeps", 1))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "sweeps must be an integer"}), 400
     sweeps = max(1, min(sweeps, 500))
     with _lock:
         s = _state["sampler"]
@@ -158,16 +208,14 @@ def api_exact_start():
     # is correct for arbitrary weights at small n. _run_exact_job decides
     # which method is applicable and refuses rather than returning an
     # unjustified result.
-    data = request.get_json(force=True)
-    n = int(data.get("n", 40))
-    n = max(4, min(n, 250))
-    c1 = float(data.get("c_up", 1.0))
-    c2 = float(data.get("c_down", 1.0))
-    a1 = float(data.get("a1", 1.0))
-    a2 = float(data.get("a2", 1.0))
-    b1 = float(data.get("b1", 1.0))
-    b2 = float(data.get("b2", 1.0))
-    seed = data.get("seed")
+    try:
+        data = request.get_json(force=True, silent=True)
+        n, w, seed = _parse_request(data, n_min=4, n_max=250)
+    except BadRequest as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    a1, a2 = w["a1"], w["a2"]
+    b1, b2 = w["b1"], w["b2"]
+    c1, c2 = w["c1"], w["c2"]
 
     job_id = uuid.uuid4().hex
     with _jobs_lock:

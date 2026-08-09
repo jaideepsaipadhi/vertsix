@@ -104,12 +104,26 @@ def _rows_for_level(n, i):
 
 class ExactSampler:
     def __init__(self, n: int, weights: dict):
+        if not isinstance(n, (int, np.integer)) or n < 1:
+            raise ValueError(f"n must be a positive integer, got {n!r}")
         if n > MAX_EXACT_N:
             raise ValueError(
                 f"exact sequential sampling is exponential in n; n={n} exceeds "
                 f"the supported limit of {MAX_EXACT_N}. Use MCMC (Run) for "
                 f"larger systems, or reduce n."
             )
+        # The Boltzmann distribution is only defined for strictly positive
+        # weights. With a zero weight whole classes of configurations are
+        # silently forbidden; with a negative one the "probabilities" are not
+        # probabilities at all and the sampler would happily return a
+        # meaningless configuration. Reject both rather than produce output
+        # that looks valid.
+        for name in ("a1", "a2", "b1", "b2", "c1", "c2"):
+            v = weights.get(name)
+            if v is None or not np.isfinite(v) or v <= 0.0:
+                raise ValueError(
+                    f"weight {name} must be a finite positive number, got {v!r}"
+                )
         self.n = n
         self.w = weights
         self.levels = [_rows_for_level(n, i) for i in range(n + 1)]
