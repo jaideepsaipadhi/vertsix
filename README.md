@@ -150,7 +150,10 @@ Controls:
 - **step** — advance one batch of sweeps manually.
 - **exact sample (CFTP)** — see below. Disabled (with an explanation)
   unless a1=a2=b1=b2=1 exactly. Shows live elapsed time while running.
-- **save PNG / save SVG** — export the current view.
+- **save PNG / save SVG** — export. PNG is a screenshot and honours the
+  current zoom and pan, so a zoomed-in view exports a crop; SVG exports the
+  complete configuration regardless of zoom or pan. See Pan / zoom / export
+  below.
 
 ## Files
 
@@ -225,7 +228,7 @@ CFTP's center-height statistics against long-run MCMC), not a cited
 theorem. If you know of a formal proof (or counterexample) for this
 specific case, please open an issue.
 
-`/api/exact/start` is capped at n<=250 in the server for interactive use, with
+`/api/exact/start` limits n to 250 for interactive use, with
 up to 2^21 half-sweeps allowed per coalescence attempt (raised from an
 earlier, smaller cap after finding it could cut off large-n runs in the
 antiferroelectric regime before they finished). At n=80, uniform weights,
@@ -245,10 +248,16 @@ types (colored)** to see the actual underlying vertex configuration.
 ## Pan / zoom / export
 
 - **scroll** on the canvas to zoom, **drag** to pan.
-- **save PNG** exports the current view as a raster image.
-- **save SVG** exports the full grid as a vector `<rect>`-per-face SVG.
-  Note: this is one rect per lattice face, so file size grows with n^2 —
-  fine through a few hundred n, unwieldy much beyond that.
+- **save PNG** is a screenshot: it captures *exactly what is on screen*,
+  including the current zoom and pan. If you are zoomed in, the PNG contains
+  only the visible crop — verified: at 1083% zoom on an n=40 lattice the PNG
+  held a fraction of the configuration. Nothing about the file looks wrong,
+  so this is easy to miss. Reset the view (double-click) before exporting if
+  you want the whole lattice.
+- **save SVG** exports the complete configuration regardless of zoom or pan —
+  the same n=40 case produced all 40 cells. This is the one to use for a
+  figure. It writes one `<rect>` per lattice face, so file size grows with
+  n^2: fine through a few hundred n, unwieldy much beyond that.
 
 ## Extending
 
@@ -261,6 +270,82 @@ types (colored)** to see the actual underlying vertex configuration.
 - A genuinely fast algorithm for the ordered (|Delta|>1) phase would need
   non-local moves — see "Known limitation" above before attempting this;
   it's real research, not a quick fix.
+
+## Deployment: the server must run as a single worker
+
+`Procfile` pins `--workers 1`. That is a correctness requirement, not a
+performance choice.
+
+Exact sampling keeps state in process memory: the background job store, the
+per-client session store, and the transfer-matrix cache. None of it is shared
+across processes, so with two or more workers a load balancer can start a job
+on one worker and route the client's status poll to another. Verified: the
+poll returns `404 unknown or expired job`, and a session created on one worker
+is rejected by the other.
+
+Raising the worker count will silently break exact sampling for every user.
+The correct way to get concurrency is to move that state into Redis or a
+database.
+
+## HTTP API
+
+The browser UI does live sampling entirely client-side and only calls
+`/api/config` and the exact-sampling endpoints. The rest are here for
+scripting.
+
+**`GET /api/config`** — authoritative client-facing constants.
+```json
+{"ok": true, "max_exact_n": 14}
+```
+
+**`POST /api/init`** — build a sampler and open a session.
+Body: `n`, and any of `a1 a2 b1 b2 c_up c_down` (default 1.0), optional `seed`.
+Returns `session_id`, `max_exact_n`, `exact_available`, `device`,
+`using_torch`, `using_gpu`, and a `frame`.
+
+`using_gpu` is derived from the device actually in use. `using_torch` only
+reports that the optional torch backend imported; torch on a CPU-only host
+is `using_torch: true` with `using_gpu: false`. The deployed instance runs
+neither — `requirements.txt` is CPU-only by design, and live sampling
+happens in the browser.
+
+**`POST /api/step`** — advance a session's chain.
+Body: `session_id` (**required**), `sweeps`.
+Rejects with `400` if `session_id` is missing/expired, or if
+`n^2 * sweeps` exceeds the per-request work budget — the endpoint runs
+synchronously on a single worker, so an unbounded request would stall the
+whole server. The error names a sweep count that will work.
+
+**`POST /api/exact/start`** — begin exact sampling; returns `job_id`
+immediately. Long computations must not sit on an open HTTP request.
+Returns `429` if `_MAX_CONCURRENT_JOBS` are already running.
+
+**`GET /api/exact/status/<job_id>`** — poll. `status` is
+`running` | `done` | `error`. On `done` the body carries `frame` and `info`
+(`info.method` is `exact-sequential` or `cftp`). Jobs stuck in `running`
+past a watchdog threshold are reaped and reported as `error`.
+
+### Out-of-range values are rejected, not clamped
+
+`n` and `sweeps` outside their supported ranges return `400` rather than
+being silently adjusted. Quietly running 500 sweeps for a request that asked
+for 9999 -- as this did previously -- leaves the caller believing the chain
+is far more equilibrated than it is, which is the same silent-wrong-data
+failure as a picture labelled with parameters it was not drawn from.
+
+### Breaking changes
+
+Two changes to `/api/init` and `/api/step` will break older scripts:
+
+* **`/api/step` now requires `session_id`.** State used to be a single
+  module-level sampler shared by every caller, so two clients clobbered each
+  other and `/api/step` could return the *other* client's model. Sessions are
+  scoped, TTL-bounded, and capped.
+* **`/api/init` no longer returns `is_symmetric_regime`.** It tested
+  `a1=a2=b1=b2=1` — the superseded CFTP criterion, which ignored `c1,c2` and
+  matched no decision the server actually makes. `/api/exact/status` also
+  hardcoded it to `true`, so the two endpoints contradicted each other for
+  identical weights. Use `exact_available` instead.
 
 ## Tests
 

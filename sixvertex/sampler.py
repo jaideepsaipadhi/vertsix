@@ -145,7 +145,18 @@ class SixVertexSampler:
         b = (bottom == 1)
         l = (left == 1)
         r = (right == 1)
-        w = torch.ones_like(top)
+        # Pin float64 rather than inheriting the height tensor's dtype.
+        #
+        # `torch.ones_like(top)` took its dtype from the heights (float32),
+        # which broke two things the numpy path gets right:
+        #   * the divide-by-zero guard below is 1e-300, which is not
+        #     representable in float32 -- it underflows to 0.0, so
+        #     clamp(before, min=1e-300) returns 0 and the division yields inf;
+        #   * heights are conceptually integers, and if the height dtype were
+        #     ever changed to an integer type the weights would be silently
+        #     truncated (a1=1.5 -> 1) while the numpy path stayed correct.
+        # The numpy path already forces float64; match it.
+        w = torch.ones_like(top, dtype=torch.float64)
         w = torch.where((~l) & (~t) & (~b) & (~r), torch.tensor(self.a1, device=w.device, dtype=w.dtype), w)
         w = torch.where(l & t & b & r, torch.tensor(self.a2, device=w.device, dtype=w.dtype), w)
         w = torch.where(l & t & (~b) & (~r), torch.tensor(self.b1, device=w.device, dtype=w.dtype), w)
@@ -187,6 +198,8 @@ class SixVertexSampler:
                          * self._classify_face_torch(W, H_after, SW, S)
                          * self._classify_face_torch(H_after, E, S, SE))
 
+                # `before`/`after` are float64 (see _classify_face_torch), so
+                # the 1e-300 floor is representable and actually guards.
                 ratio = torch.where(is_extremum, after / torch.clamp(before, min=1e-300), torch.ones_like(before))
                 p_accept = ratio / (1.0 + ratio)
                 rnd = torch.rand(H.shape, device=H.device)
@@ -214,6 +227,14 @@ class SixVertexSampler:
         return interior & same
 
     def to_json(self):
+        """Plain-JSON frame. NOT used by the server or the browser -- both use
+        `to_binary_frame` (base64 int16, ~3x smaller). Kept for notebook use.
+
+        If you change the frame format, change BOTH: a mismatch between these
+        two is exactly the bug that made "Exact Sample" silently return
+        nothing for weeks (the server switched to the binary frame while the
+        browser still parsed the plain one).
+        """
         Hn = self.height_array()
         active = self.active_mask()
         return json.dumps({

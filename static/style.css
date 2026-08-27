@@ -185,7 +185,12 @@ main {
   min-height: 0;
 }
 
-@media (max-width: 55rem) {
+/* Single column only when the screen is narrow AND tall enough for the
+   stacked layout. A landscape phone (e.g. 844x390) is narrow by width but
+   very short: stacking there put the canvas above the fold and the controls
+   below it. Wide-but-short screens keep the two-column layout, which is what
+   the horizontal space is for. */
+@media (max-width: 55rem) and (min-height: 500px) {
   .wrap { height: auto; min-height: 100vh; }
   main { grid-template-columns: 1fr; }
 }
@@ -396,4 +401,61 @@ button.exact:disabled {
   .section { padding: 0.28em 0.4em; gap: 0.2em; }
   button { padding: 0.3em 0.3em; }
   #exact-gate-note, #ordered-regime-note { font-size: 0.6em; }
+}
+
+/* ---------------------------------------------------------------------------
+   Touch devices: enlarge hit targets.
+
+   Measured on a 390px phone before this block, every control was under the
+   ~44px minimum both Apple and Google recommend -- and the weight/size
+   sliders were 4px tall, which is essentially undraggable: a fingertip
+   covers roughly ten times that. Mobile is the platform this tool was first
+   reported broken on, so fiddly controls matter here more than usual.
+
+   Scoped to `pointer: coarse` so the desktop layout is untouched.
+--------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+  button {
+    min-height: 44px;
+    font-size: 0.95em;
+  }
+
+  .field select {
+    min-height: 44px;
+  }
+
+  .field input[type="range"] {
+    height: 44px;              /* hit area */
+    background: transparent;   /* the visible track is drawn below */
+  }
+  .field input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--line);
+  }
+  .field input[type="range"]::-moz-range-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--line);
+  }
+  .field input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 26px; height: 26px;
+    margin-top: -10px;         /* centre on the 6px track */
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .field input[type="range"]::-moz-range-thumb {
+    width: 26px; height: 26px;
+    border: none; border-radius: 50%;
+    background: var(--accent);
+  }
+
+  #symmetric-check {
+    width: 26px; height: 26px;
+  }
+
+  /* the panel gets taller with bigger controls; it already scrolls, and the
+     sampling section sits above the parameters so the actions stay reachable */
+  .row { gap: 0.5em; }
 }

@@ -1,4 +1,8 @@
 (() => {
+  // Tells the inline watchdog in index.html that the app scripts arrived.
+  // Set first thing, before anything that could throw.
+  window.__vertsixLoaded = true;
+
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d");
   const off = document.createElement("canvas");
@@ -57,6 +61,24 @@
     dlog(`UNCAUGHT ERROR: ${e.message} (${e.filename}:${e.lineno})`);
   });
 
+  // Bumped whenever n or the weights change. An exact-sampling request
+  // captures the current value and its result is discarded if the value has
+  // moved on -- otherwise a job started at one n lands after the user has
+  // already changed n, silently overwriting the current chain. Observed:
+  // start exact at n=13, drag to n=60, and the finished job reinstated a
+  // 13x13 chain while the panel read 60 and the exported SVG came out 13x13.
+  let paramGen = 0;
+  function bumpParams() { paramGen++; }
+
+  // Ownership of the Exact Sample button, kept separate from the general
+  // `busy` flag. localInit() sets and then CLEARS `busy` as part of a normal
+  // rebuild, so when the debounced n-slider rebuild fired during an exact
+  // job it cleared the job's own busy flag and re-enabled the button --
+  // letting a second job launch on top of the first (observed: 2 requests to
+  // /api/exact/start where there should be 1, both running on a single
+  // worker).
+  let exactInFlight = false;
+
   let sampler = null;
   let lastFrame = null;
   let playing = false;
@@ -89,7 +111,10 @@
     };
   }
 
-  const MAX_EXACT_N = 14;
+  // Default only; the server sends the authoritative value in /api/init
+  // (field `max_exact_n`). Keeping a hardcoded copy in sync by hand is how
+  // client and server gating drift apart.
+  let MAX_EXACT_N = 14;
 
   function isExactSafe(w, n) {
     // Exact sequential sampling (server-side) is correct for ARBITRARY
@@ -102,10 +127,12 @@
 
   function pairedSlider(sliderA, outA, sliderB, outB) {
     sliderA.addEventListener("input", () => {
+      bumpParams();
       outA.textContent = parseFloat(sliderA.value).toFixed(2);
       if (symmetricCheck.checked) {
         sliderB.value = sliderA.value;
-        outB.textContent = parseFloat(sliderB.value).toFixed(2);
+        bumpParams();
+      outB.textContent = parseFloat(sliderB.value).toFixed(2);
       }
       updateDeltaDisplay();
     });
@@ -121,6 +148,21 @@
 
   function updateDeltaDisplay() {
     const w = currentWeights();
+
+    // Apply weight changes to a LIVE chain.
+    //
+    // `SixVertexJS` captured its weights at construction and nothing ever
+    // updated them, so moving a slider mid-run changed only the Delta
+    // readout: the UI could show "-3.03 antiferroelectric" while the chain
+    // kept sampling at Delta=0.5 until the user happened to press Reset.
+    // A picture that does not match its own stated parameters is exactly the
+    // failure this tool has been bitten by before.
+    //
+    // Retargeting a Markov chain mid-run is legitimate -- it simply needs
+    // time to re-equilibrate, which is what the user watching the slider
+    // expects to see.
+    if (sampler) sampler.w = w;
+
     const a1a2 = w.a1 * w.a2, b1b2 = w.b1 * w.b2, c1c2 = w.c1 * w.c2;
     const delta = (a1a2 + b1b2 - c1c2) / (2 * Math.sqrt(a1a2 * b1b2));
     let regime;
@@ -134,7 +176,7 @@
 
     const n = parseInt(nSlider.value, 10);
     const safe = isExactSafe(w, n);
-    btnExact.disabled = !safe;
+    btnExact.disabled = !safe || exactInFlight;
     btnExact.style.opacity = safe ? "1" : "0.4";
     btnExact.style.cursor = safe ? "pointer" : "not-allowed";
     exactGateNote.style.display = safe ? "none" : "block";
@@ -149,7 +191,30 @@
     }
   }
 
-  nSlider.addEventListener("input", () => { nOut.textContent = nSlider.value; updateDeltaDisplay(); });
+  // Changing n must actually resize the lattice.
+  //
+  // The chain's size is fixed when the sampler is built, and unlike the
+  // weights it cannot be retargeted in place -- a different n is a different
+  // state space. Previously the slider only relabelled the UI: with the
+  // slider dragged to 200 while a chain built at n=20 kept running, the
+  // exported SVG came out 20x20 while the panel read "200". An exported
+  // artifact that contradicts its own stated parameters is the worst version
+  // of this bug, so rebuild instead.
+  //
+  // Debounced: dragging the slider fires a stream of input events and each
+  // rebuild allocates a fresh lattice.
+  let nRebuildTimer = null;
+  nSlider.addEventListener("input", () => {
+    nOut.textContent = nSlider.value;
+    bumpParams();
+    updateDeltaDisplay();
+    clearTimeout(nRebuildTimer);
+    nRebuildTimer = setTimeout(() => {
+      // localInit() leaves `playing` alone, so a running chain keeps running
+      // at the new size rather than silently stopping.
+      localInit();
+    }, 200);
+  });
   pairedSlider(a1Slider, a1Out, a2Slider, a2Out);
   pairedSlider(b1Slider, b1Out, b2Slider, b2Out);
   pairedSlider(c1Slider, c1Out, c2Slider, c2Out);
@@ -179,8 +244,26 @@
     const rect = stage.getBoundingClientRect();
     const availWidth = rect.width > 10 ? rect.width : mainEl.clientWidth;
     const availHeight = mainEl.clientHeight;
-    const w = Math.round(Math.max(280, Math.min(availWidth, 2000)));
-    const h = Math.round(Math.max(280, Math.min(availHeight, 1400)));
+    let w = Math.round(Math.max(280, Math.min(availWidth, 2000)));
+    let h = Math.round(Math.max(280, Math.min(availHeight, 1400)));
+
+    // Single-column (narrow) layout: cap the stage at square.
+    //
+    // The lattice is square and is fitted to min(width, height), so on a
+    // phone a 360x1142 stage drew a 360x360 picture and left 68% of the
+    // canvas empty -- pushing the controls 375px below the fold behind a
+    // band of dead black. Nothing is gained by the extra height.
+    if (window.matchMedia("(max-width: 55rem) and (min-height: 500px)").matches) {
+      // Square, AND bounded by the actual viewport height.
+      //
+      // Capping to square alone was not enough: in landscape the column is
+      // wide but short, so min(h, w) produced a 780x780 stage on a 390px-tall
+      // screen -- the canvas was twice the height of the display and the
+      // controls landed at y=820. Leave room for them.
+      const side = Math.min(w, Math.round(window.innerHeight * 0.7));
+      w = Math.max(280, side);
+      h = w;
+    }
 
     stage.style.width = w + "px";
     stage.style.height = h + "px";
@@ -249,6 +332,24 @@
     const activeBytes = Uint8Array.from(atob(data.active_b64), c => c.charCodeAt(0));
     const height = new Int16Array(heightBytes.buffer);
     const size = data.n + 1;
+    const expected = size * size;
+
+    // Validate the frame against the n the server reported.
+    //
+    // Without this a short frame decodes happily and every out-of-range read
+    // returns undefined, so the height field renders as NaN -- a visibly
+    // corrupt picture with no error anywhere. Measured on a deliberately
+    // truncated frame: 31 undefined reads, 41 NaN pixels, zero exceptions.
+    //
+    // This project has already shipped one silent frame-format mismatch (the
+    // server moved to binary frames while this function still parsed the
+    // plain-JSON ones, and "Exact Sample" quietly did nothing for weeks). Fail
+    // loudly instead: the caller's try/catch surfaces it to the user.
+    if (height.length !== expected || activeBytes.length !== expected) {
+      throw new Error(
+        `malformed frame from server: n=${data.n} implies ${expected} values, ` +
+        `got ${height.length} heights and ${activeBytes.length} active flags`);
+    }
     return {
       n: data.n,
       get: (i, j) => height[i * size + j],
@@ -483,7 +584,14 @@
   });
 
   const loadStartTime = Date.now();
-  const MIN_LOADING_MS = 3000;
+  // Floor on how long the loading screen shows, so a fast load does not make
+  // it flash. It was 3000 ms, which was pure dead time: measured, the app is
+  // ready in ~57 ms, so the screen was holding ~3.3 s -- 58x the actual load
+  // -- on every single visit. That directly undercuts the work done on
+  // sampling speed, and this tool's first review complaint was that it felt
+  // slow. A short floor keeps the animation from flickering without making
+  // the tool feel sluggish.
+  const MIN_LOADING_MS = 600;
 
   function hideLoadingScreen() {
     const el = document.getElementById("loading-screen");
@@ -504,6 +612,12 @@
   }
 
   function localInit() {
+    // Any rebuild of the chain invalidates an exact-sampling request that is
+    // still in flight. Bump here rather than in each caller: Reset went
+    // unguarded when only the sliders bumped, so pressing Reset during a job
+    // left the user with a fresh chain that the finished job then silently
+    // replaced -- they asked to start over and got an exact sample instead.
+    bumpParams();
     busy = true;
     hudStatus.textContent = "initializing...";
     const n = parseInt(nSlider.value, 10);
@@ -560,17 +674,19 @@
   });
 
   btnExact.addEventListener("click", async () => {
-    if (busy) return;
+    if (exactInFlight) return;
     const w = currentWeights();
     if (!isExactSafe(w, parseInt(nSlider.value, 10))) return;
+    exactInFlight = true;
     playing = false;
     btnPlay.classList.remove("active");
     btnPlay.textContent = "run";
     busy = true;
     btnExact.disabled = true;
-    hudStatus.textContent = "CFTP running (server)...";
+    hudStatus.textContent = "exact sampling (server)...";
     const n = parseInt(nSlider.value, 10);
 
+    const requestedGen = paramGen;
     const startTime = Date.now();
 
     function updateProgressUI(lastT, attempts) {
@@ -591,22 +707,32 @@
       });
       const startData = await startRes.json();
       if (!startData.ok) {
-        exactInfo.textContent = `CFTP failed to start: ${startData.error}`;
+        exactInfo.textContent = `exact sampling failed to start: ${startData.error}`;
         hudStatus.textContent = "ready";
-        btnExact.textContent = "exact sample (CFTP)";
-        busy = false;
-        updateDeltaDisplay();
-        return;
+        return;                       // cleanup runs in `finally`
       }
 
       const jobId = startData.job_id;
+      // Bound the poll loop. If the worker thread ever dies without writing
+      // a terminal status (OOM kill, hard restart), the job sits at
+      // "running" forever and this loop would poll once a second until the
+      // tab is closed -- with the button stuck disabled the whole time.
+      const POLL_LIMIT_SECONDS = 45 * 60;
       let finished = false;
+      let polls = 0;
       while (!finished) {
         await new Promise(resolve => setTimeout(resolve, 1000));
+        if (++polls > POLL_LIMIT_SECONDS) {
+          exactInfo.textContent =
+            "gave up waiting for the server after 45 minutes; the job may " +
+            "still be running. Try a smaller n.";
+          hudStatus.textContent = "ready";
+          break;
+        }
         const statusRes = await fetch(`/api/exact/status/${jobId}`);
         const statusData = await statusRes.json();
         if (!statusData.ok) {
-          exactInfo.textContent = `CFTP status check failed: ${statusData.error}`;
+          exactInfo.textContent = `status check failed: ${statusData.error}`;
           hudStatus.textContent = "ready";
           finished = true;
           break;
@@ -624,24 +750,57 @@
             exactInfo.textContent =
               `exact: coalesced after ${inf.half_sweeps} half-sweeps (${inf.attempts} doublings)`;
           }
-          sampler = null;
-          renderFrame(frameFromServerData(statusData.frame));
-          hudDevice.textContent = "server (numpy/torch, CFTP only)";
+          // Seed the client-side chain FROM the exact sample rather than
+          // discarding it.
+          //
+          // This used to set `sampler = null`, which left Run silently dead:
+          // clicking it flipped the button to "pause" (so it looked live) but
+          // localStep() bails on `!sampler`, so the sweep counter sat at 0
+          // until the user happened to press Reset. Nothing reported an error.
+          //
+          // Continuing the chain from an exact draw is also the right thing
+          // scientifically: the chain starts in equilibrium, so there is no
+          // burn-in to discard.
+          if (paramGen !== requestedGen) {
+            exactInfo.textContent =
+              "exact sample discarded: the chain was reset or its parameters changed while it was running";
+            hudStatus.textContent = "ready";
+            finished = true;
+            break;
+          }
+          const exactFrame = frameFromServerData(statusData.frame);
+          const en = exactFrame.n;
+          const esize = en + 1;
+          sampler = new SixVertexJS(en, w, Date.now() & 0xffffffff);
+          for (let i = 0; i < esize; i++) {
+            for (let j = 0; j < esize; j++) {
+              sampler.H[i * esize + j] = exactFrame.get(i, j);
+            }
+          }
+          renderFrame(frameFromSampler(sampler));
+          hudDevice.textContent = "in-browser (JS), seeded from exact sample";
           hudStatus.textContent = "exact sample";
           finished = true;
         } else if (statusData.status === "error") {
-          exactInfo.textContent = `CFTP failed: ${statusData.error}`;
+          exactInfo.textContent = `exact sampling failed: ${statusData.error}`;
           hudStatus.textContent = "ready";
           finished = true;
         }
       }
     } catch (e) {
-      exactInfo.textContent = "CFTP request failed";
+      exactInfo.textContent = "request to server failed (is it reachable?)";
       hudStatus.textContent = "ready";
+    } finally {
+      // MUST be `finally`. The early `return` on a refused start skipped this
+      // cleanup entirely, so exactInFlight stayed true and the button was
+      // disabled permanently -- reachable as soon as the server started
+      // returning 429 for too many concurrent jobs. Every exit path has to
+      // release the flag, not just the happy one.
+      btnExact.textContent = "exact sample";
+      exactInFlight = false;
+      busy = false;
+      updateDeltaDisplay();
     }
-    btnExact.textContent = "exact sample (CFTP)";
-    busy = false;
-    updateDeltaDisplay();
   });
 
   btnSave.addEventListener("click", () => {
@@ -696,6 +855,18 @@
     link.click();
     URL.revokeObjectURL(url);
   });
+
+  // Ask the server for the authoritative exact-sampling limit. Non-blocking:
+  // the hardcoded default above is used until (or unless) this returns.
+  fetch("/api/config")
+    .then(r => r.json())
+    .then(cfg => {
+      if (cfg && typeof cfg.max_exact_n === "number") {
+        MAX_EXACT_N = cfg.max_exact_n;
+        updateDeltaDisplay();
+      }
+    })
+    .catch(() => {});
 
   sizeStage();
   localInit();

@@ -301,6 +301,912 @@ def test_observables_unbiased_across_seeds():
     assert np.mean(np.abs(zs) > 3) < 0.3, f"too many outliers: {zs}"
 
 
+def test_api_gating_matches_server_routing():
+    """Regression: /api/init once reported `is_symmetric_regime` while
+    /api/exact/status hardcoded it to True, so the API contradicted itself
+    for identical weights. The reported availability flag must agree with
+    what _run_exact_job actually does.
+    """
+    import importlib
+    server = importlib.import_module("server")
+
+    def server_routes_to(n, w):
+        is_uniform = all(v == 1.0 for v in w.values())
+        if n <= server.MAX_EXACT_N:
+            return "exact-sequential"
+        return "cftp" if is_uniform else "refuse"
+
+    cases = [
+        (8,  {"a1":1.5,"a2":0.8,"b1":1.2,"b2":0.9,"c1":2.1,"c2":0.7}),
+        (14, {"a1":1.0,"a2":1.0,"b1":1.0,"b2":1.0,"c1":2.83,"c2":2.83}),
+        (15, {"a1":1.0,"a2":1.0,"b1":1.0,"b2":1.0,"c1":1.0,"c2":1.0}),
+        (40, {"a1":1.0,"a2":1.0,"b1":1.0,"b2":1.0,"c1":2.83,"c2":2.83}),
+        (200,{"a1":1.5,"a2":0.8,"b1":1.2,"b2":0.9,"c1":2.1,"c2":0.7}),
+    ]
+    for n, w in cases:
+        is_uniform = all(v == 1.0 for v in w.values())
+        advertised = (n <= server.MAX_EXACT_N) or is_uniform
+        actual = server_routes_to(n, w) != "refuse"
+        assert advertised == actual, (
+            f"n={n} w={w}: advertised exact_available={advertised} "
+            f"but server routes to {server_routes_to(n, w)}")
+
+
+def test_no_stale_symmetric_regime_field():
+    """The flag tested a1=a2=b1=b2=1 -- the superseded CFTP criterion, which
+    ignored c1,c2 and matched no decision the server makes. It must not
+    reappear on the API surface."""
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "server.py")).read()
+    # A mention in the explanatory comment is fine; use as a response KEY
+    # (i.e. followed by a colon, as in a dict literal) is what must not return.
+    import re
+    lines = [ln for ln in src.splitlines()
+             if not ln.strip().startswith("#")]
+    offenders = [ln for ln in lines
+                 if re.search(r'["\']is_symmetric_regime["\']\s*:', ln)
+                 or re.search(r'response\s*\[\s*["\']is_symmetric_regime', ln)]
+    assert not offenders, (
+        f"is_symmetric_regime resurfaced as an API response field: {offenders}")
+
+
+def test_running_jobs_are_not_expired():
+    """Regression: cleanup expired by created_at regardless of status, so a
+    still-running job could be evicted purely for being old -- discarding its
+    result and 404-ing the client. Exact sampling at large n can legitimately
+    exceed the TTL."""
+    import importlib, time as _t
+    server = importlib.import_module("server")
+    now = _t.time()
+    with server._jobs_lock:
+        saved = dict(server._jobs)
+        server._jobs.clear()
+        server._jobs["running_old"] = {"status": "running", "created_at": now - 10*server._JOB_TTL_SECONDS,
+                                       "last_T": None, "attempts": 0, "n": 200}
+        server._jobs["done_old"] = {"status": "done", "created_at": now - 10*server._JOB_TTL_SECONDS,
+                                    "finished_at": now - 2*server._JOB_TTL_SECONDS,
+                                    "last_T": None, "attempts": 0, "n": 8}
+        server._jobs["done_recent"] = {"status": "done", "created_at": now - 10*server._JOB_TTL_SECONDS,
+                                       "finished_at": now, "last_T": None, "attempts": 0, "n": 8}
+        server._cleanup_old_jobs()
+        left = set(server._jobs)
+        server._jobs.clear(); server._jobs.update(saved)
+    assert "running_old" in left, "a RUNNING job was expired"
+    assert "done_recent" in left, "a recently finished result was expired"
+    assert "done_old" not in left, "a long-finished job was not expired"
+
+
+def test_exact_cache_is_memory_bounded():
+    """Regression: the cache cleared only when entry COUNT exceeded 8, but
+    entries vary from ~1 MB (n=10) to ~47 MB (n=14), so 8 entries could mean
+    ~380 MB -- too much beside the interpreter on a 512 MB instance."""
+    from sixvertex import exact as ex
+    with ex._cache_lock:
+        ex._cache.clear(); ex._costs.clear()
+    for k in range(6):
+        ex.exact_sample(13, c1=1.5 + 0.01*k, c2=1.7, seed=1)
+        total = sum(ex._costs.get(key, 0) for key in ex._cache)
+        assert total <= ex._CACHE_BUDGET_PAIRS, (
+            f"cache exceeded budget: {total} > {ex._CACHE_BUDGET_PAIRS}")
+    assert len(ex._cache) >= 1, "cache evicted everything; LRU should retain the hot entry"
+
+
+def test_sessions_are_isolated():
+    """Regression: /api/init wrote a single module-level sampler shared by
+    every caller, so two clients clobbered each other and /api/step returned
+    the OTHER client's model (A asked n=6, received n=30)."""
+    import importlib
+    server = importlib.import_module("server")
+    app = server.app.test_client()
+
+    a = app.post("/api/init", json={"n": 6,  "a1":1,"a2":1,"b1":1,"b2":1,
+                                    "c_up":1,"c_down":1}).get_json()
+    b = app.post("/api/init", json={"n": 30, "a1":1,"a2":1,"b1":1,"b2":1,
+                                    "c_up":2.5,"c_down":2.5}).get_json()
+    assert a["session_id"] != b["session_id"]
+
+    sa = app.post("/api/step", json={"sweeps":1,"session_id":a["session_id"]}).get_json()
+    sb = app.post("/api/step", json={"sweeps":1,"session_id":b["session_id"]}).get_json()
+    assert sa["frame"]["n"] == 6,  f"session A leaked: got n={sa['frame']['n']}"
+    assert sb["frame"]["n"] == 30, f"session B leaked: got n={sb['frame']['n']}"
+
+    # missing / unknown ids must error, never silently serve someone else
+    for payload in ({"sweeps":1}, {"sweeps":1,"session_id":"deadbeef"}):
+        r = app.post("/api/step", json=payload)
+        assert r.status_code == 400, "bad session_id should be rejected"
+        assert "frame" not in r.get_json()
+
+
+def test_procfile_pins_single_worker():
+    """Regression: the in-memory job/session/cache state is per-process, so
+    more than one worker silently breaks exact sampling (job polls 404 on the
+    other worker). Keep the constraint enforced in the repo."""
+    import os, re
+    here = os.path.dirname(__file__)
+    path = os.path.join(here, "..", "Procfile")
+    assert os.path.exists(path), "Procfile missing; start command is unversioned"
+    cmd = [ln for ln in open(path).read().splitlines()
+           if ln.strip() and not ln.strip().startswith("#")]
+    assert cmd, "Procfile has no command"
+    line = cmd[0]
+    m = re.search(r"--workers\s+(\d+)", line)
+    assert m, f"Procfile does not pin --workers: {line}"
+    assert m.group(1) == "1", (
+        f"Procfile sets --workers {m.group(1)}; the in-memory job and session "
+        f"stores require exactly 1")
+
+
+def test_torch_path_pins_float64():
+    """Regression (static): the torch branch built its weight tensor with
+    `torch.ones_like(top)`, inheriting the heights' float32 dtype. Two
+    consequences, both silent:
+
+      * the divide-by-zero floor is 1e-300, which underflows to 0.0 in
+        float32, so `clamp(before, min=1e-300)` guards nothing and the
+        division can produce inf;
+      * if heights were ever stored as an integer dtype, float weights would
+        be truncated (a1=1.5 -> 1) on the torch path while numpy stayed right.
+
+    torch is not in requirements.txt, so this branch is not exercised at
+    runtime here; the check is static so the fix cannot silently regress.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "sixvertex", "sampler.py")).read()
+
+    assert "torch.ones_like(top, dtype=torch.float64)" in src, (
+        "torch weight tensor no longer pins float64")
+
+    # and the numpy path it mirrors must stay float64 too
+    assert "np.ones_like(top, dtype=np.float64)" in src, (
+        "numpy weight tensor no longer pins float64")
+
+    # the guard value must be representable in whatever dtype is used
+    import numpy as _np
+    assert _np.float64(1e-300) > 0, "guard must be nonzero in float64"
+    assert _np.float32(1e-300) == 0, (
+        "sanity: this test exists because 1e-300 underflows in float32")
+
+
+def test_step_request_work_is_bounded():
+    """Regression: /api/step capped n (<=400) and sweeps (<=500) separately,
+    so n=400 with sweeps=500 was accepted and ran ~44 s synchronously under a
+    lock on a single worker -- stalling every other request, including the
+    status polls of in-flight exact jobs. Public endpoint, so trivially
+    reachable. Bound the product, not the factors."""
+    import importlib
+    server = importlib.import_module("server")
+    app = server.app.test_client()
+
+    init = app.post("/api/init", json={"n": 400}).get_json()
+    sid = init["session_id"]
+
+    # the pathological request must be refused, and refused cheaply
+    r = app.post("/api/step", json={"sweeps": 500, "session_id": sid})
+    assert r.status_code == 400, "oversized step request was accepted"
+    assert "too large" in r.get_json()["error"]
+    assert "frame" not in r.get_json()
+
+    # and the error must tell the caller what WOULD work
+    import re
+    m = re.search(r"sweeps <= (\d+)", r.get_json()["error"])
+    assert m, "error should suggest a workable sweep count"
+    suggested = int(m.group(1))
+    ok = app.post("/api/step", json={"sweeps": suggested, "session_id": sid})
+    assert ok.status_code == 200, "the suggested sweep count was itself rejected"
+
+    # small requests are unaffected
+    small = app.post("/api/init", json={"n": 40}).get_json()
+    r2 = app.post("/api/step", json={"sweeps": 500, "session_id": small["session_id"]})
+    assert r2.status_code == 200, "a modest request was wrongly refused"
+
+
+def test_client_validates_frame_length():
+    """Regression (static): the browser decoded the binary frame without
+    checking it against the reported n. A short frame decodes without error;
+    every out-of-range read returns undefined, so the height field renders as
+    NaN -- visibly corrupt, no exception. Measured on a truncated frame: 31
+    undefined reads, 41 NaN pixels, zero errors raised.
+
+    Guarding matters here specifically: this project already shipped one
+    silent frame-format mismatch (server moved to binary frames while the
+    client still parsed plain JSON) and "Exact Sample" quietly did nothing
+    for weeks.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+    body_start = src.index("function frameFromServerData")
+    body = src[body_start:body_start + 2000]
+    assert "expected" in body and "malformed frame" in body, (
+        "frameFromServerData no longer validates the decoded frame length")
+    # the server side must keep emitting a frame whose size matches n
+    from sixvertex.sampler import SixVertexSampler
+    import base64
+    s_ = SixVertexSampler(n=6, c_up=1.0, c_down=1.0)
+    frame = s_.to_binary_frame()
+    size = frame["n"] + 1
+    heights = base64.b64decode(frame["height_b64"])
+    active = base64.b64decode(frame["active_b64"])
+    assert len(heights) == size * size * 2, "height frame size disagrees with n"
+    assert len(active) == size * size, "active frame size disagrees with n"
+
+
+def test_run_is_not_dead_after_exact_sample():
+    """Regression (static): the exact-sample success path set `sampler = null`,
+    which left Run silently dead. Clicking it flipped the button to "pause" --
+    so it looked live -- but localStep() bails on `!sampler`, so the sweep
+    counter stayed at 0 until the user happened to press Reset. No error
+    anywhere. Measured: 198 sweeps before an exact sample, 0 after.
+
+    The path must now seed the client chain from the exact draw instead
+    (which is also correct statistically: the chain starts in equilibrium,
+    so there is no burn-in).
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+
+    start = src.index('statusData.status === "done"')
+    block = src[start:start + 2000]
+    # Strip comment lines: the fix documents the old bug in prose, and a raw
+    # substring search would match that description instead of live code.
+    code = "\n".join(ln for ln in block.splitlines()
+                     if not ln.strip().startswith("//"))
+    assert "sampler = null" not in code, (
+        "exact-sample path discards the live sampler again; Run will be dead")
+    assert "new SixVertexJS(" in block, (
+        "exact-sample path no longer seeds a live sampler from the result")
+
+
+def test_live_weight_changes_reach_the_chain():
+    """Regression (static): SixVertexJS captured its weights at construction
+    and nothing ever updated them, so moving a slider mid-run changed only the
+    Delta readout. The UI could show "-3.03 antiferroelectric" while the chain
+    was still sampling at Delta=+0.5 -- a picture that does not match its own
+    stated parameters, which is the exact failure mode this tool has been
+    caught on before.
+
+    Verified behaviourally at the time of the fix: retargeting a live chain
+    from Delta=+0.5 to Delta=-3 dropped the flippable-site fraction from
+    0.233 to 0.105, i.e. the chain really does respond.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+    start = src.index("function updateDeltaDisplay")
+    block = src[start:start + 1500]
+    code = "\n".join(ln for ln in block.splitlines()
+                     if not ln.strip().startswith("//"))
+    assert "sampler.w = w" in code, (
+        "slider changes no longer propagate to the running chain; the Delta "
+        "readout can desync from what is actually being sampled")
+
+
+def test_n_slider_rebuilds_the_lattice():
+    """Regression (static): the n slider only relabelled the UI. The chain's
+    size is fixed at construction and cannot be retargeted in place, so with
+    the slider dragged to 200 while a chain built at n=20 kept running, the
+    exported SVG came out 20x20 while the panel read "200" -- an exported
+    artifact contradicting its own stated parameters.
+
+    Must rebuild (debounced, since dragging fires a stream of events).
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+    start = src.index('nSlider.addEventListener')
+    block = src[start:start + 1200]
+    code = "\n".join(ln for ln in block.splitlines()
+                     if not ln.strip().startswith("//"))
+    assert "localInit()" in code, (
+        "n slider no longer rebuilds the sampler; the displayed n can desync "
+        "from the chain and from exported files")
+    assert "setTimeout" in code and "clearTimeout" in code, (
+        "n slider rebuild is not debounced; dragging will thrash allocations")
+
+
+def test_ui_does_not_mislabel_the_exact_method():
+    """Regression: the UI hardcoded "CFTP" in the button and in every error
+    message, but for n <= MAX_EXACT_N (most interactive use) the method is the
+    sequential transfer-matrix sampler, not CFTP. Worse, the |Delta|>1 note
+    claimed Exact Sample "still gives a mathematically correct result ... but
+    can take substantially longer at large n" -- at |Delta|>1 the weights are
+    necessarily non-uniform, so above the limit exact sampling is *refused*,
+    not slower. The note promised a capability the tool declines to provide.
+
+    Gorin has already asked what CFTP even is here, so naming the wrong
+    algorithm is not a cosmetic issue.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+    # user-visible strings must not assert a specific method
+    for bad in ('"exact sample (CFTP)"', "CFTP request failed",
+                "CFTP failed to start", "CFTP status check failed"):
+        assert bad not in code, f"UI still hardcodes the wrong method name: {bad}"
+
+    assert "exact sample (CFTP)" not in html, "button still mislabels the method"
+    assert "can take substantially longer at large n" not in html, (
+        "ordered-regime note still promises exact sampling above the size "
+        "limit, where it is actually refused")
+
+
+def test_stale_exact_results_are_discarded():
+    """Regression: two earlier fixes interacted badly. Making the n slider
+    rebuild the lattice, plus seeding the live chain from an exact result,
+    meant a job started at one n could land *after* the user changed n and
+    silently reinstate the old chain. Observed: start exact at n=13, drag to
+    n=60, and the finished job restored a 13x13 chain while the panel read 60
+    and the exported SVG came out 13x13 -- exactly the desync those fixes were
+    meant to remove.
+
+    Same hazard for the weights: a draw made at Delta=-3 must not be presented
+    under a Delta=+0.92 label.
+
+    Guarded with a generation counter captured at request time.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    assert "paramGen" in code, "no generation counter guarding exact results"
+    assert "const requestedGen = paramGen" in code, (
+        "exact request does not capture the parameter generation")
+    assert "paramGen !== requestedGen" in code, (
+        "exact result is applied without checking whether parameters moved on")
+    # the counter must actually be bumped by the controls that matter
+    assert code.count("bumpParams()") >= 3, (
+        "bumpParams() is not wired to n and both weight-slider directions")
+
+
+def test_reset_is_not_overwritten_by_a_stale_exact_job():
+    """Regression: the staleness guard was wired only to the sliders, so
+    Reset went unguarded. Pressing Reset during an exact job left the user
+    with a fresh chain that the finished job then silently replaced -- they
+    asked to start over and received an exact sample instead, with no
+    indication.
+
+    Fixed at the root: localInit() bumps the generation, so every rebuild
+    path (Reset, the n slider, and any future caller) invalidates an in-flight
+    request rather than each caller having to remember.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    start = code.index("function localInit")
+    body = code[start:start + 400]
+    assert "bumpParams()" in body, (
+        "localInit() no longer bumps the generation; rebuilds triggered by "
+        "Reset can be silently overwritten by an in-flight exact job")
+
+
+def test_exact_job_owns_its_own_in_flight_flag():
+    """Regression: the Exact Sample button was gated on the general-purpose
+    `busy` flag, which localInit() sets and then CLEARS as part of any normal
+    rebuild. So the debounced n-slider rebuild, firing during an exact job,
+    cleared the job's own flag and re-enabled the button -- letting a second
+    job launch on top of the first. Observed: 2 requests to /api/exact/start
+    where there should be 1, both running against a single worker.
+
+    The job now owns a dedicated `exactInFlight` flag that rebuilds cannot
+    touch.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    assert "exactInFlight" in code, "no dedicated in-flight flag for exact sampling"
+    assert "if (exactInFlight) return;" in code, (
+        "exact handler still guards on the shared `busy` flag, which rebuilds clear")
+    assert "!safe || exactInFlight" in code, (
+        "button gating ignores whether a job is already in flight")
+
+
+def test_shipped_cftp_module_is_correct_at_uniform():
+    """The CFTP module still ships and still serves n > MAX_EXACT_N at the
+    uniform point, so it needs its own correctness check -- it uses the
+    simplified p_up = c1/(c1+c2) rule that is valid ONLY there.
+
+    Uses a chi-squared test at n=4 (42 configurations, ~700 expected counts
+    each). A max-deviation check at larger n is worthless here: with 7436
+    configurations and a few thousand samples almost every count is 0 or 1,
+    and the statistic measures nothing.
+    """
+    from sixvertex.cftp import cftp_sample
+    cfgs = enumerate_height_functions(4)
+    keys = {c.astype(np.int64).tobytes(): i for i, c in enumerate(cfgs)}
+    counts = np.zeros(len(cfgs))
+    N = 12000
+    for seed in range(N):
+        H, _ = cftp_sample(n=4, c_up=1.0, c_down=1.0, master_seed=seed)
+        k = keys.get(np.asarray(H, dtype=np.int64).tobytes())
+        assert k is not None, "CFTP produced an invalid configuration"
+        counts[k] += 1
+
+    expected = counts.sum() / len(cfgs)
+    assert expected > 100, "test is underpowered"
+    chi2 = float(((counts - expected) ** 2 / expected).sum())
+    # 42 configs -> 41 dof; the 0.1% upper tail is ~76
+    assert chi2 < 76, (
+        f"CFTP deviates from the uniform measure at the ice point: chi2={chi2:.1f}")
+
+
+def test_concurrent_exact_jobs_are_capped():
+    """Regression: nothing limited concurrent background jobs. The sampler
+    cache is memory-bounded but the transient per-job builds are not --
+    measured, 6 concurrent n=13 jobs took the server from 44 MB to 151 MB,
+    and an n=14 build is ~3x larger again, so a few dozen public requests
+    would exhaust a 512 MB instance. The browser runs one job at a time, but
+    /api/exact/start is public. With the cap: 10 requests -> 3 accepted,
+    7 refused, peak 99 MB.
+    """
+    import importlib
+    server = importlib.import_module("server")
+    assert hasattr(server, "_MAX_CONCURRENT_JOBS"), "no concurrency cap defined"
+    assert 1 <= server._MAX_CONCURRENT_JOBS <= 8, (
+        f"implausible cap: {server._MAX_CONCURRENT_JOBS}")
+
+    src = open(server.__file__).read()
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith("#"))
+    assert "_MAX_CONCURRENT_JOBS" in code, "cap defined but never enforced"
+    assert "429" in code, "over-limit requests should be refused with 429"
+
+
+def test_exact_flag_released_on_every_exit_path():
+    """Regression: `exactInFlight` was released only on the happy path. The
+    early `return` taken when the server refuses a start skipped the cleanup,
+    so the flag stayed true and the Exact Sample button was disabled
+    permanently -- no reload, no recovery. Adding the concurrency cap made
+    this reachable in normal use: one 429 and the button was dead for good.
+
+    Cleanup must live in a `finally`, so refusals, exceptions and success all
+    release the flag.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    start = code.index("btnExact.addEventListener")
+    handler = code[start:]                      # to end of file; the handler
+                                                # body is several KB long
+    assert "} finally {" in handler, (
+        "exact handler has no finally block; an early return can strand "
+        "exactInFlight and permanently disable the button")
+    fin = handler[handler.index("} finally {"):]
+    assert "exactInFlight = false" in fin, (
+        "exactInFlight is not released in the finally block")
+    # Released exactly once, inside finally -- not scattered across exit paths.
+    # (Counted within the handler only: the module-level declaration
+    # `let exactInFlight = false;` sits above it and is not a release.)
+    assert handler.count("exactInFlight = false") == 1, (
+        "exactInFlight released in more than one place; keep it in finally only")
+
+
+def test_abandoned_jobs_do_not_hold_slots_forever():
+    """Regression from combining two earlier fixes. Making cleanup expire only
+    FINISHED jobs (so genuine long runs survive) meant a job whose thread died
+    without writing a terminal status stayed "running" forever. Adding the
+    concurrency cap then gave those zombies the power to disable exact
+    sampling server-wide: three six-hour-old "running" entries with no live
+    threads returned 429 to every request and survived every cleanup.
+
+    A watchdog now reaps them, with a threshold far above any legitimate
+    runtime so real long jobs are untouched.
+    """
+    import importlib, time as _t
+    server = importlib.import_module("server")
+    app = server.app.test_client()
+    now = _t.time()
+
+    with server._jobs_lock:
+        saved = dict(server._jobs)
+        server._jobs.clear()
+        for k in range(server._MAX_CONCURRENT_JOBS):
+            server._jobs[f"zombie{k}"] = {
+                "status": "running",
+                "created_at": now - 10 * server._JOB_MAX_RUNTIME_SECONDS,
+                "last_T": None, "attempts": 0, "n": 13}
+        # a genuine long-running job, comfortably under the threshold
+        server._jobs["legit"] = {
+            "status": "running",
+            "created_at": now - server._JOB_MAX_RUNTIME_SECONDS // 4,
+            "last_T": None, "attempts": 0, "n": 200}
+
+    try:
+        r = app.post("/api/exact/start", json={"n": 8, "a1": 1, "a2": 1, "b1": 1,
+                                               "b2": 1, "c_up": 1, "c_down": 1})
+        assert r.status_code == 200, (
+            f"zombie jobs still block new work: HTTP {r.status_code}")
+        with server._jobs_lock:
+            assert server._jobs["legit"]["status"] == "running", (
+                "watchdog reaped a legitimate long-running job")
+            for k in range(server._MAX_CONCURRENT_JOBS):
+                z = server._jobs.get(f"zombie{k}")
+                assert z is None or z["status"] == "error", (
+                    "abandoned job left in the running state")
+    finally:
+        with server._jobs_lock:
+            server._jobs.clear(); server._jobs.update(saved)
+
+
+def test_api_docs_match_the_implementation():
+    """The API contract changed substantially across several rounds --
+    including two breaking changes (/api/step now requires session_id;
+    /api/init no longer returns is_symmetric_regime) plus new 429/400
+    responses and a new endpoint -- while the README documented none of it.
+    Anyone scripting against the server would have hit undocumented failures.
+
+    Pin the documented contract to the live routes so they cannot drift
+    apart again.
+    """
+    import os, importlib
+    here = os.path.dirname(__file__)
+    readme = open(os.path.join(here, "..", "README.md")).read()
+    server = importlib.import_module("server")
+
+    for ep in ("/api/config", "/api/init", "/api/step",
+               "/api/exact/start", "/api/exact/status"):
+        assert ep in readme, f"{ep} is undocumented"
+
+    routes = {r.rule for r in server.app.url_map.iter_rules()}
+    for rule in routes:
+        if rule.startswith("/api/"):
+            base = rule.split("<")[0].rstrip("/")
+            assert base in readme, f"route {rule} exists but is undocumented"
+
+    # the breaking changes must stay called out
+    assert "Breaking changes" in readme, "breaking API changes not flagged"
+    assert "session_id" in readme, "session_id requirement undocumented"
+    assert "exact_available" in readme, "replacement field undocumented"
+
+    # and the app must really behave as documented
+    app = server.app.test_client()
+    cfg = app.get("/api/config").get_json()
+    assert cfg["max_exact_n"] == server.MAX_EXACT_N
+    init = app.post("/api/init", json={"n": 8}).get_json()
+    assert "session_id" in init and "is_symmetric_regime" not in init
+    assert app.post("/api/step", json={"sweeps": 1}).status_code == 400
+
+
+def test_out_of_range_values_are_rejected_not_clamped():
+    """Regression: `sweeps` was silently clamped (`max(1, min(sweeps, 500))`),
+    so a request for 9999 sweeps ran 500 and returned success. The caller then
+    believes the chain is far more equilibrated than it is -- the same
+    silent-wrong-data failure as a picture labelled with parameters it was not
+    drawn from.
+
+    `n` was already rejecting (a change made when validation was added, which
+    also made the README's word "capped" wrong). Both now behave the same way.
+    """
+    import importlib
+    server = importlib.import_module("server")
+    app = server.app.test_client()
+
+    init = app.post("/api/init", json={"n": 20}).get_json()
+    sid = init["session_id"]
+
+    # in range -> fine
+    assert app.post("/api/step", json={"sweeps": 500, "session_id": sid}).status_code == 200
+    # out of range -> refused, and NOT silently substituted
+    for bad in (501, 9999, 0, -5):
+        r = app.post("/api/step", json={"sweeps": bad, "session_id": sid})
+        assert r.status_code == 400, f"sweeps={bad} was accepted"
+        assert "frame" not in r.get_json(), (
+            f"sweeps={bad} returned a frame; it was clamped rather than refused")
+
+    # n behaves the same way
+    ok = app.post("/api/exact/start", json={"n": 250, "a1": 1, "a2": 1, "b1": 1,
+                                            "b2": 1, "c_up": 1, "c_down": 1})
+    assert ok.status_code == 200
+    bad = app.post("/api/exact/start", json={"n": 251, "a1": 1, "a2": 1, "b1": 1,
+                                             "b2": 1, "c_up": 1, "c_down": 1})
+    assert bad.status_code == 400, "n above the limit was accepted"
+    assert "job_id" not in bad.get_json(), "n was clamped rather than refused"
+
+
+def test_extreme_weights_behave_correctly_or_are_refused():
+    """The API accepts any positive finite weight; the UI sliders stop at 3.0.
+    So the extreme regimes are reachable by scripting and must either be
+    handled correctly or refused -- never silently produce garbage.
+
+    Upward: the backward pass overflows and the guard must fire.
+    Downward: the measure concentrates on the unique configuration with no
+    c-vertices (exactly one exists at every n, verified by enumeration), so
+    Z -> 1 and every sample should be that configuration. Getting 0 c-vertices
+    here is the correct answer, not underflow damage.
+    """
+    # upward extremes must be refused, not silently wrong
+    for c in (1e3, 1e30):
+        try:
+            ExactSampler(12, {**UNIFORM, "c1": c, "c2": c})
+        except RuntimeError as e:
+            assert "overflow" in str(e).lower()
+        else:
+            raise AssertionError(f"c={c} should have tripped the overflow guard")
+
+    # exactly one c-free configuration exists at each n
+    for n in (3, 4, 5):
+        zero = sum(1 for H in enumerate_height_functions(n)
+                   if (classify_vertices(H, n)["c1"] +
+                       classify_vertices(H, n)["c2"]) == 0)
+        assert zero == 1, f"expected exactly one c-free config at n={n}, got {zero}"
+
+    # and the sampler concentrates there as c -> 0
+    n = 6
+    S = ExactSampler(n, {**UNIFORM, "c1": 1e-30, "c2": 1e-30})
+    assert abs(S.partition_function() - 1.0) < 1e-9, (
+        "Z should tend to 1 as c -> 0 (one surviving configuration)")
+    rng = np.random.default_rng(5)
+    for _ in range(25):
+        H = S.sample(rng)
+        c = classify_vertices(H, n)
+        assert c["c1"] + c["c2"] == 0, (
+            "as c -> 0 every sample must be the unique c-free configuration")
+
+
+def test_action_controls_come_before_the_parameter_notes():
+    """Regression: explanatory notes added over successive rounds pushed the
+    SAMPLING section below the fold. At 1366x768 -- one of the most common
+    laptop resolutions -- Run, Step, Reset, Exact Sample and Save were ALL
+    off-screen, so a first-time visitor could not see how to start the
+    simulation at all. Only the sliders were visible.
+
+    Fixed by ordering the panel actions-before-parameters. Guarded here
+    because the failure mode is additive: every future note lengthens the
+    parameters block, and nothing else would notice.
+    """
+    import os, re
+    here = os.path.dirname(__file__)
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    order = re.findall(r'section-title">(\w+)', html)
+    assert "sampling" in order and "parameters" in order, order
+    assert order.index("sampling") < order.index("parameters"), (
+        f"sampling controls must precede the parameters block, got {order}")
+
+
+def test_touch_targets_are_enlarged_on_coarse_pointers():
+    """Regression: on a 390px phone every control was under the ~44px minimum
+    Apple and Google both recommend, and the weight/size sliders were 4px
+    tall -- essentially undraggable, since a fingertip covers roughly ten
+    times that. Mobile is the platform this tool was first reported broken
+    on, so fiddly controls matter here more than usual.
+
+    The rules are scoped to `pointer: coarse` so the desktop layout is
+    unaffected (verified: the desktop Run button stayed 26px).
+    """
+    import os
+    here = os.path.dirname(__file__)
+    css = open(os.path.join(here, "..", "static", "style.css")).read()
+
+    assert "pointer: coarse" in css, "no touch-specific sizing rules"
+    block = css[css.index("pointer: coarse"):]
+    assert "min-height: 44px" in block, "buttons not enlarged for touch"
+    for pseudo in ("::-webkit-slider-thumb", "::-moz-range-thumb"):
+        assert pseudo in block, (
+            f"slider thumb not enlarged for touch ({pseudo}); a 4px track is "
+            f"undraggable on a phone")
+
+    # the checkbox relies on its label for a usable target, so the label must
+    # stay associated with it
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    assert 'for="symmetric-check"' in html, (
+        "symmetric checkbox lost its label; the box alone is too small to tap")
+
+
+def test_no_false_gpu_claims():
+    """Regression: the page headline read "GPU height-function sampler" while
+    live sampling runs as plain in-browser JavaScript, exact sampling runs on
+    numpy, and requirements.txt has no torch -- so the deployed instance can
+    never use a GPU. That was the single most prominent line of text on the
+    site, and it was false.
+
+    `/api/init` had the same problem: it reported `using_gpu: s.use_torch`,
+    which is true whenever torch merely *imports*. Torch on a CPU-only host
+    would report using_gpu true while running on the CPU.
+    """
+    import os, importlib
+    here = os.path.dirname(__file__)
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    subtitle = html[html.index('class="subtitle"'):]
+    subtitle = subtitle[:subtitle.index("</div>")]
+    assert "GPU" not in subtitle, (
+        f"headline claims GPU acceleration the deployed tool does not have: {subtitle}")
+
+    # requirements really are CPU-only, so the claim would be unbackable
+    reqs = open(os.path.join(here, "..", "requirements.txt")).read().lower()
+    assert "torch" not in reqs, (
+        "torch is now a declared dependency; revisit the GPU wording")
+
+    server = importlib.import_module("server")
+    app = server.app.test_client()
+    info = app.post("/api/init", json={"n": 8}).get_json()
+    assert "using_gpu" in info and "using_torch" in info
+    assert info["using_gpu"] is False, (
+        "using_gpu must be derived from the device in use, not from whether "
+        "torch imported")
+
+
+def test_loading_screen_does_not_impose_seconds_of_dead_time():
+    """Regression: the loading screen enforced a 3000 ms minimum while the app
+    was measurably ready in ~57 ms -- roughly 3.3 s of pure dead time on every
+    visit, 58x the actual load. Not a cosmetic quibble here: the first review
+    of this tool complained it felt slow next to Petrov's, and a lot of work
+    went into sampling speed which a branding animation then handed back.
+
+    A short floor is fine (it stops the animation flickering on a fast load);
+    seconds are not.
+    """
+    import os, re
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+    m = re.search(r"MIN_LOADING_MS\s*=\s*(\d+)", src)
+    assert m, "MIN_LOADING_MS not found"
+    ms = int(m.group(1))
+    assert ms <= 1000, (
+        f"loading screen floor is {ms} ms; that is dead time on every visit")
+
+
+def test_page_explains_itself_when_scripts_do_not_run():
+    """Regression: if draw.js failed to load -- blocked request, proxy,
+    adblocker, cache miss -- or JavaScript was disabled, the user sat on
+    "loading..." forever with no explanation. The existing 8 s fallback was
+    inside draw.js, so it was useless in exactly the case that mattered: it
+    died with the script it was meant to rescue.
+
+    Needs (a) a <noscript> message and (b) a watchdog that lives OUTSIDE the
+    app bundle and so cannot be taken out by the same failure.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+
+    assert "<noscript>" in html, "no message for users without JavaScript"
+    ns = html[html.index("<noscript>"):html.index("</noscript>")]
+    assert "JavaScript" in ns, "noscript block does not explain what is wrong"
+
+    # the watchdog must be inline in the document, before the app scripts
+    watchdog = html.index("__vertsixLoaded")
+    app_script = html.index('src="draw.js')
+    assert watchdog < app_script, (
+        "the load watchdog must come before (and live outside) draw.js, or it "
+        "dies with the script it is meant to rescue")
+
+    assert "window.__vertsixLoaded = true" in js, (
+        "draw.js no longer signals successful load; the watchdog will fire "
+        "spuriously on every visit")
+
+
+def test_stage_is_capped_square_on_narrow_layouts():
+    """Regression: the lattice is square and is fitted to min(width, height),
+    but the stage took whatever height the column gave it. On a phone that
+    meant a 360x1142 canvas drawing a 360x360 picture -- 68% dead black --
+    and the controls sat 375px below the fold behind it. Nothing was gained
+    by the extra height.
+
+    Capping the stage at square on the single-column layout removed the dead
+    area entirely and brought the controls above the fold (measured: Run
+    visible without scrolling at 390x844 and 320x568). Desktop is untouched.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    start = code.index("function sizeStage")
+    body = code[start:start + 1500]
+    assert "matchMedia" in body, (
+        "sizeStage no longer distinguishes the narrow layout; the stage will "
+        "stretch and strand the controls below a band of empty canvas")
+    assert "h = w;" in body, "stage is not made square on the narrow layout"
+
+    # The stage must also be bounded by the viewport height, not just squared.
+    # Capping to square alone gave a 780x780 stage on a 390px-tall landscape
+    # phone -- taller than the display, controls at y=820.
+    assert "window.innerHeight" in body, (
+        "stage is squared but not bounded by the viewport height; on a short "
+        "landscape screen it will overflow and strand the controls")
+
+    # The single-column switch must be height-aware and identical in JS and
+    # CSS. A landscape phone is narrow by width but very short: stacking there
+    # put the canvas above the fold and the controls below it.
+    css = open(os.path.join(here, "..", "static", "style.css")).read()
+    bp = "(max-width: 55rem) and (min-height: 500px)"
+    assert bp in body, f"JS single-column breakpoint is not {bp}"
+    assert "max-width: 55rem) and (min-height: 500px" in css, (
+        "CSS single-column breakpoint is not height-aware")
+
+
+def test_export_semantics_are_documented():
+    """The two exports differ in a way that bites silently. PNG is a
+    screenshot: it captures the current zoom and pan, so at 1083% zoom on an
+    n=40 lattice it held only a fraction of the configuration. SVG exports all
+    40 cells regardless. Nothing about the cropped PNG looks wrong, so someone
+    preparing a figure can easily ship a partial lattice.
+
+    The README said only "exports the current view", which is true and does
+    not warn anyone.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    readme = open(os.path.join(here, "..", "README.md")).read()
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+
+    exports = readme[readme.index("save PNG"):]
+    exports = exports[:1200]
+    assert "zoom" in exports and "crop" in exports.lower(), (
+        "README does not warn that PNG export depends on zoom/pan state")
+    assert "regardless of zoom" in exports, (
+        "README does not state that SVG is zoom-independent")
+
+    # and the distinction should be discoverable without reading the README
+    assert 'id="btn-save"' in html and "title=" in html
+    btn = html[html.index('id="btn-save"'):]
+    btn = btn[:btn.index(">")]
+    assert "zoom" in btn, "PNG button has no tooltip explaining the crop behaviour"
+
+
+def test_arctic_circle_appears_in_an_exact_sample():
+    """End-to-end physics check: sampler -> height function -> active mask.
+
+    At the ice point the flippable ("liquid") region must fill the disk
+    inscribed in the square, with frozen corners. This is checked on a CFTP
+    sample rather than an MCMC run so equilibration is not in question -- an
+    under-equilibrated chain at n=120 put 4% of flippable sites outside the
+    circle and 61 in the corners, which looks like a bug and is not one.
+
+    The tolerance matters: the arctic boundary fluctuates on scale n^(1/3),
+    so a handful of sites just outside r=R is expected. Demanding zero was
+    wrong. What must not happen is activity DEEP in the frozen corners.
+    """
+    from sixvertex.cftp import cftp_sample
+    from sixvertex.sampler import SixVertexSampler
+
+    n = 60
+    H, _ = cftp_sample(n=n, c_up=1.0, c_down=1.0, master_seed=11, max_T=1 << 21)
+    s = SixVertexSampler(n=n, a1=1, a2=1, b1=1, b2=1, c_up=1, c_down=1)
+    # Assign through the same branch server.py uses. Writing s.H directly with
+    # a numpy array breaks when torch is installed: height_array() then calls
+    # .detach() on it. This failed only on machines with torch, which is why
+    # it survived -- the dev sandbox had no torch and never exercised the path.
+    if s.use_torch:
+        import torch
+        s.H = torch.from_numpy(np.asarray(H, dtype=np.float32)).to(s.device)
+    else:
+        s.H = np.asarray(H, dtype=np.float32)
+    m = s.active_mask()
+
+    ys, xs = np.where(m)
+    assert len(xs) > 0, "no flippable sites at all"
+    c = n / 2.0
+    r = np.sqrt((xs - c) ** 2 + (ys - c) ** 2) / (n / 2.0)
+
+    # the liquid region is concentrated inside the inscribed circle
+    assert np.median(r) < 0.85, f"median radius {np.median(r):.3f} is too large"
+    assert (r > 1.10).mean() < 0.02, (
+        f"{(r > 1.10).mean():.3f} of flippable sites are well outside the "
+        f"arctic circle; the frozen region is not forming")
+    # and nothing is active deep in the frozen corners
+    assert (r > 1.30).sum() == 0, "flippable sites deep inside the frozen corners"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

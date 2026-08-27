@@ -9,9 +9,23 @@
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
-<link rel="stylesheet" href="style.css?v=28" />
+<link rel="stylesheet" href="style.css?v=31" />
 </head>
 <body>
+  <noscript>
+    <div style="position:fixed;inset:0;z-index:3000;background:#0a0806;color:#eae3da;
+                display:flex;align-items:center;justify-content:center;text-align:center;
+                font-family:'IBM Plex Mono',monospace;padding:2em;">
+      <div>
+        <div style="font-size:1.6rem;font-weight:700;color:#e8a05c;">vertsix</div>
+        <p style="max-width:32em;line-height:1.5;">
+          This sampler runs the simulation in your browser, so it needs
+          JavaScript enabled. Nothing is sent to a server for the live view.
+        </p>
+      </div>
+    </div>
+  </noscript>
+
   <div id="loading-screen">
     <div class="loading-brand">vertsix</div>
     <div class="loading-anim-wrap">
@@ -49,7 +63,7 @@
   <div class="wrap">
     <header>
       <h1>vertsix</h1>
-      <div class="subtitle">GPU height-function sampler &middot; domain wall boundary conditions</div>
+      <div class="subtitle">six-vertex height-function sampler &middot; domain wall boundary conditions</div>
     </header>
     <main>
       <div class="stage" id="stage">
@@ -87,6 +101,24 @@
             <div><input type="color" id="color-c2" value="#5c8ce8" style="vertical-align:middle;margin-right:0.5em;width:1.6em;height:1.6em;border:none;background:none;padding:0;cursor:pointer;"/>c<sub>2</sub> (turn, other way)</div>
             <button id="btn-reset-colors" style="margin-top:0.3em;font-size:0.85em;">reset colors</button>
           </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">sampling</div>
+          <div class="row">
+            <button id="btn-init">reset</button>
+            <button id="btn-play" class="primary">run</button>
+            <button id="btn-step">step</button>
+          </div>
+
+          <div class="row">
+            <button id="btn-exact" class="exact">exact sample</button>
+          </div>
+          <p class="note" id="exact-gate-note">
+            Exact sampling is proven mathematically valid only at a=b=1
+            (c<sub>1</sub>, c<sub>2</sub> free). Set the a/b sliders back to 1.00 to
+            re-enable it.
+          </p>
         </div>
 
         <div class="section">
@@ -140,8 +172,11 @@
           <p class="note" id="ordered-regime-note" style="display:none;color:#e8a05c;">
             |&Delta;|&gt;1 (ferroelectric/antiferroelectric): local Monte Carlo dynamics genuinely mix very slowly
             here (this is known physics, not a bug) -- <strong>Run</strong> will likely look visually
-            "stuck". <strong>Exact Sample (CFTP)</strong> still gives a mathematically correct result in
-            this regime, but can take substantially longer at large n -- consider reducing n first.
+            "stuck", and successive frames stay correlated for a long time.
+            <strong>Exact Sample</strong> sidesteps mixing entirely and is correct in this regime, but
+            only up to the size limit noted below: reaching |&Delta;|&gt;1 requires non-uniform weights,
+            where the exact method's cost grows exponentially with n. Above that limit no exact method
+            is available and the button is disabled.
           </p>
 
           <div class="field">
@@ -151,29 +186,12 @@
           </div>
         </div>
 
-        <div class="section">
-          <div class="section-title">sampling</div>
-          <div class="row">
-            <button id="btn-init">reset</button>
-            <button id="btn-play" class="primary">run</button>
-            <button id="btn-step">step</button>
-          </div>
-
-          <div class="row">
-            <button id="btn-exact" class="exact">exact sample (CFTP)</button>
-          </div>
-          <p class="note" id="exact-gate-note">
-            Exact sampling is proven mathematically valid only at a=b=1
-            (c<sub>1</sub>, c<sub>2</sub> free). Set the a/b sliders back to 1.00 to
-            re-enable it.
-          </p>
-        </div>
 
         <div class="section">
           <div class="section-title">export</div>
           <div class="row">
-            <button id="btn-save">save PNG</button>
-            <button id="btn-save-svg">save SVG</button>
+            <button id="btn-save" title="Screenshot of the current view, including zoom and pan. Double-click the canvas to reset the view first if you want the whole lattice.">save PNG</button>
+            <button id="btn-save-svg" title="The complete configuration as vector graphics, regardless of zoom or pan. Use this for figures.">save SVG</button>
           </div>
         </div>
 
@@ -194,7 +212,35 @@
     </main>
   </div>
 
+<script>
+  // Deliberately inline, before the app scripts.
+  //
+  // draw.js has its own fallback that hides the loading screen, but it is
+  // inside draw.js -- useless in exactly the case that matters, when draw.js
+  // is the thing that failed to load (blocked request, proxy, cache miss).
+  // Then the user sat on "loading..." forever with no explanation. This
+  // watchdog cannot be taken out by the same failure.
+  window.addEventListener("load", function () {
+    setTimeout(function () {
+      if (window.__vertsixLoaded) return;
+      var el = document.getElementById("loading-screen");
+      if (!el) return;
+      var t = document.getElementById("loading-text");
+      if (t) {
+        t.textContent = "failed to load";
+        t.style.color = "#ffb3b3";
+      }
+      var p = document.createElement("p");
+      p.style.cssText = "max-width:30em;margin:1em auto 0;line-height:1.5;" +
+                        "color:#8a7c6c;font-size:0.85rem;";
+      p.textContent = "The application scripts did not load. Try a hard refresh; " +
+                      "if it persists, something between you and the server is " +
+                      "blocking them.";
+      el.querySelector(".loading-anim-wrap").appendChild(p);
+    }, 10000);
+  });
+</script>
 <script src="sixvertex.js?v=1"></script>
-<script src="draw.js?v=26"></script>
+<script src="draw.js?v=30"></script>
 </body>
 </html>

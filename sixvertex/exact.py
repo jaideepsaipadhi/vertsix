@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from itertools import product
 
 import numpy as np
@@ -212,8 +213,41 @@ class ExactSampler:
         return np.array(H, dtype=np.int32)
 
 
-_cache = {}
+# The cache is bounded by estimated MEMORY, not by entry count.
+#
+# Entries differ enormously in size: an n=10 sampler costs ~1 MB while an
+# n=14 one costs ~47 MB (measured as process RSS growth). The previous rule
+# -- "clear everything once there are more than 8 entries" -- therefore
+# permitted roughly 8 x 47 = ~380 MB of cache, which does not fit alongside
+# the interpreter and numpy on a 512 MB instance.
+#
+# Cost is estimated from the number of stored transition pairs, calibrated
+# against measured RSS: ~12.5 MB per 1e6 pairs at the sizes that matter.
+_CACHE_BUDGET_PAIRS = 5_000_000           # ~60 MB resident; keeps peak RSS
+                                          # well clear of a 512 MB instance
+_cache = OrderedDict()
 _cache_lock = threading.Lock()
+
+
+def _sampler_cost(sampler):
+    """Cheap proxy for a sampler's memory footprint."""
+    return sum(len(targets) for level in sampler.trans
+               for (targets, _) in level.values())
+
+
+def _evict_to_budget():
+    """Least-recently-used eviction until the cache fits the budget.
+
+    LRU rather than clear-all so that the entry a user is actively drawing
+    from survives; clearing everything meant the next draw paid the full
+    backward pass again (~30 s at n=14)."""
+    total = sum(_costs.get(k, 0) for k in _cache)
+    while _cache and total > _CACHE_BUDGET_PAIRS:
+        old_key, _ = _cache.popitem(last=False)
+        total -= _costs.pop(old_key, 0)
+
+
+_costs = {}
 
 
 def exact_sample(n: int, a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=1.0, seed=None):
@@ -229,15 +263,18 @@ def exact_sample(n: int, a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=1.0, seed=No
     key = (n, tuple(sorted(weights.items())))
     with _cache_lock:
         sampler = _cache.get(key)
+        if sampler is not None:
+            _cache.move_to_end(key)          # mark as recently used
     if sampler is None:
         # Build outside the lock: this is the expensive step and holding the
         # lock through it would serialize unrelated jobs. A duplicate build
         # under a race is wasteful but harmless (the result is identical).
         sampler = ExactSampler(n, weights)
         with _cache_lock:
-            if len(_cache) > 8:
-                _cache.clear()
             _cache[key] = sampler
+            _cache.move_to_end(key)
+            _costs[key] = _sampler_cost(sampler)
+            _evict_to_budget()
     rng = np.random.default_rng(seed)
     H = sampler.sample(rng)
     info = {
