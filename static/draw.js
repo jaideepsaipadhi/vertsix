@@ -117,12 +117,14 @@
   let MAX_EXACT_N = 14;
 
   function isExactSafe(w, n) {
-    // Exact sequential sampling (server-side) is correct for ARBITRARY
-    // weights, but its cost is exponential in n. CFTP is only valid at the
-    // uniform point. So: small n is always fine; large n only at uniform.
+    // Small n: the sequential transfer-matrix sampler handles any weights.
+    // Large n: CFTP, which is monotone exactly on b1b2 >= a1a2 and
+    // b1b2 >= c1c2 -- a region, not just the uniform point. Outside it no
+    // monotone coupling of the update exists at all, so there is nothing to
+    // fall back on.
     if (n <= MAX_EXACT_N) return true;
-    return w.a1 === 1 && w.a2 === 1 && w.b1 === 1 && w.b2 === 1
-        && w.c1 === 1 && w.c2 === 1;
+    const A = w.a1 * w.a2, B = w.b1 * w.b2, C = w.c1 * w.c2;
+    return B >= A - 1e-12 && B >= C - 1e-12;
   }
 
   function pairedSlider(sliderA, outA, sliderB, outB) {
@@ -177,6 +179,30 @@
     const n = parseInt(nSlider.value, 10);
     const safe = isExactSafe(w, n);
     btnExact.disabled = !safe || exactInFlight;
+
+    // Warn when CFTP is valid but likely to be impractically slow.
+    //
+    // Being inside the monotone region guarantees correctness, not speed.
+    // Coalescence time grows exponentially in n deep in the ferroelectric
+    // phase: measured at Delta=5, the two extremal chains took 78, 1956 and
+    // 32506 sweeps to meet at n = 6, 8, 10 -- roughly 20x per step of two,
+    // where n^2 growth would be about 1.6x. The onset is near Delta = 2
+    // (at n=12: ~100 sweeps below Delta 1.5, 293 at Delta 2, 4564 at
+    // Delta 3), so warn from there rather than at the phase boundary.
+    const A = w.a1 * w.a2, B = w.b1 * w.b2, C = w.c1 * w.c2;
+    const dlt = (A + B - C) / (2 * Math.sqrt(A * B));
+    const slowNote = document.getElementById("slow-exact-note");
+    if (slowNote) {
+      const risky = safe && n > MAX_EXACT_N && dlt > 2;
+      slowNote.style.display = risky ? "block" : "none";
+      if (risky) {
+        slowNote.textContent =
+          `\u0394 = ${dlt.toFixed(2)} is deep in the ordered phase. Exact ` +
+          `sampling is still valid here, but the time for the two chains to ` +
+          `meet grows exponentially with n, so this may not finish. Reduce n ` +
+          `or \u0394 if it stalls.`;
+      }
+    }
     btnExact.style.opacity = safe ? "1" : "0.4";
     btnExact.style.cursor = safe ? "pointer" : "not-allowed";
     exactGateNote.style.display = safe ? "none" : "block";
@@ -185,7 +211,7 @@
         `Exact sampling for non-uniform weights uses an exact sequential ` +
         `(transfer-matrix) method whose cost grows exponentially with n, so ` +
         `it is limited to n &le; ${MAX_EXACT_N}. Beyond that, the only exact ` +
-        `method available (CFTP) is valid solely at the uniform point ` +
+        `method available (CFTP) requires b1b2 &ge; a1a2 and b1b2 &ge; c1c2 ` +
         `(all weights = 1). Reduce n to ${MAX_EXACT_N} or below, or set all ` +
         `weights to 1.00.`;
     }
@@ -747,8 +773,11 @@
             exactInfo.textContent =
               `exact sample (sequential transfer-matrix method \u2014 valid for all weights)`;
           } else {
+            // the sweep count is reported as `sweeps` by cftp_exact.py and as
+            // `half_sweeps` by the legacy module; accept either.
+            const sw = inf.sweeps !== undefined ? inf.sweeps : inf.half_sweeps;
             exactInfo.textContent =
-              `exact: coalesced after ${inf.half_sweeps} half-sweeps (${inf.attempts} doublings)`;
+              `exact sample (CFTP, coalesced after ${sw} sweeps, ${inf.attempts} doublings)`;
           }
           // Seed the client-side chain FROM the exact sample rather than
           // discarding it.

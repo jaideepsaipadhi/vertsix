@@ -10,6 +10,8 @@ from sixvertex.sampler import SixVertexSampler
 import numpy as np
 
 from sixvertex.cftp import cftp_sample
+from sixvertex.cftp_exact import (cftp_sample as cftp_exact_sample,
+                                  in_monotone_region)
 from sixvertex.exact import exact_sample, MAX_EXACT_N
 
 app = Flask(__name__, static_folder="static", static_url_path="")
@@ -136,26 +138,31 @@ def _run_exact_job(job_id, n, a1, a2, b1, b2, c1, c2, seed):
                 _jobs[job_id]["attempts"] = attempts
 
     try:
-        is_uniform = (a1 == 1.0 and a2 == 1.0 and b1 == 1.0 and b2 == 1.0
-                      and c1 == 1.0 and c2 == 1.0)
+        w = {"a1": a1, "a2": a2, "b1": b1, "b2": b2, "c1": c1, "c2": c2}
 
         if n <= MAX_EXACT_N:
             H, info = exact_sample(n, a1=a1, a2=a2, b1=b1, b2=b2,
                                    c1=c1, c2=c2, seed=seed)
             H = H.astype(np.float32)
-        elif is_uniform:
-            H, info = cftp_sample(n=n, c_up=c1, c_down=c2,
-                                   master_seed=seed, max_T=1 << 21,
-                                   progress_cb=progress_cb)
-            info = dict(info)
-            info["method"] = "cftp"
+        elif in_monotone_region(w):
+            # CFTP with the correct four-face rule is valid on the whole
+            # region b1b2 >= a1a2 and b1b2 >= c1c2, not merely at the uniform
+            # point. Outside that region no coupling of the single-site update
+            # is monotone (the marginals are not ordered), so there is no CFTP
+            # scheme to fall back on -- hence the refusal below rather than a
+            # slower method.
+            H, info = cftp_exact_sample(n, w, master_seed=seed,
+                                        max_T=1 << 21, progress_cb=progress_cb)
         else:
+            A, B, C = w["a1"]*w["a2"], w["b1"]*w["b2"], w["c1"]*w["c2"]
             raise RuntimeError(
-                f"Exact sampling for non-uniform weights is only available for "
-                f"n <= {MAX_EXACT_N} (exact sequential method; cost grows "
-                f"exponentially with n). CFTP is not valid away from the "
-                f"uniform point, so no exact result can be given here -- "
-                f"reduce n to {MAX_EXACT_N} or below, or set all weights to 1."
+                f"No exact method is available here. The sequential sampler is "
+                f"limited to n <= {MAX_EXACT_N} (its cost grows exponentially "
+                f"with n), and CFTP requires b1b2 >= a1a2 and b1b2 >= c1c2 "
+                f"(here A={A:.4g}, B={B:.4g}, C={C:.4g}); outside that region "
+                f"no monotone coupling of the update exists. Reduce n to "
+                f"{MAX_EXACT_N} or below, or choose weights with b1b2 "
+                f"dominant."
             )
 
         s = SixVertexSampler(n=n, c_up=c1, c_down=c2, a1=a1, a2=a2, b1=b1, b2=b2)
@@ -265,9 +272,9 @@ def api_init():
         # (The old "is_symmetric_regime" flag tested a1=a2=b1=b2=1, which
         # was the superseded CFTP criterion: it ignored c1,c2 entirely and
         # no longer corresponded to any decision the server makes.)
-        is_uniform = all(
-            v == 1.0 for v in (w["a1"], w["a2"], w["b1"], w["b2"], w["c1"], w["c2"])
-        )
+        _w = {"a1": w["a1"], "a2": w["a2"], "b1": w["b1"],
+              "b2": w["b2"], "c1": w["c1"], "c2": w["c2"]}
+        cftp_ok = in_monotone_region(_w)
         info = {
             "n": n,
             "device": str(s.device),
@@ -278,7 +285,7 @@ def api_init():
             "using_torch": s.use_torch,
             "using_gpu": "cuda" in str(s.device).lower(),
             "max_exact_n": MAX_EXACT_N,
-            "exact_available": (n <= MAX_EXACT_N) or is_uniform,
+            "exact_available": (n <= MAX_EXACT_N) or cftp_ok,
             "session_id": session_id,
         }
     return jsonify({"ok": True, **info, "frame": s.to_binary_frame()})

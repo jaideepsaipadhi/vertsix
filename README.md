@@ -51,65 +51,43 @@ view that colors every face by its actual vertex type, with a legend —
 useful for visually checking the simulation against theory independent of
 the smoothed color gradient.
 
-## Known limitation: slow mixing when |Delta| > 1
+## Correction: the MCMC is NOT stuck at |Delta| > 1
 
-When |Delta| > 1 (ferroelectric or antiferroelectric regime), **live
-sampling ("Run") will look visually stuck** — this is expected, verified
-physics, not a bug in the underlying algorithm. We confirmed this two
-separate ways:
+Earlier versions of this file, and an email to a collaborator, claimed that
+local sampling fails to equilibrate in the ordered phases -- citing that at
+`a=b=1, c=sqrt(8)` (`Delta=-3`) the flippable-site fraction sat near 3% while
+"exact" samples showed ~25%.
 
-1. Comparing mixing behavior across Delta = 0.25, 0.5 (disordered, both
-   mix in a healthy, improving way) versus Delta = -1.5, -3
-   (antiferroelectric, both get stuck almost immediately regardless of how
-   extreme), the transition happens precisely at the known theoretical
-   phase boundary |Delta|=1.
-2. At a1=a2=b1=b2=1, c1=c2=sqrt(8) (Delta=-3), we brute-force-verified the
-   *algorithm itself* is exactly correct at small n (n=4, max deviation
-   0.16% from the true distribution) — so there is no bug in the
-   acceptance-ratio computation. But at n=30, running the same dynamics
-   for 30,000 sweeps across 3 independent seeds, the fraction of
-   locally-flippable sites stayed locked around 3-4%, nowhere near the
-   true equilibrium value of ~25% (confirmed against 8 independent exact
-   CFTP samples at the same n and weights). **This means the mixing
-   problem is already severe well before "large" n — it is not something
-   that only shows up once n gets big.** An earlier version of this
-   document said the opposite; that was wrong, and this is the corrected
-   version.
+**That comparison was invalid.** The ~25% came from the old `cftp.py`, which
+used `p_up = c1/(c1+c2)` and therefore sampled the wrong measure entirely at
+these weights (it is off by 64% at `c=sqrt(8)`; see the correction notice in
+ALGORITHM.md). The MCMC was being measured against a broken reference.
 
-This is critical slowing down for local Monte Carlo dynamics in ordered
-phases, a well-documented phenomenon in the literature, not something
-specific to this tool.
+With a correct reference -- the sequential transfer-matrix sampler, which is
+exact for arbitrary weights -- the true equilibrium flippable fraction at
+`Delta=-3` is
 
-**Exact Sample (CFTP) still gives a mathematically correct result in this
-regime** — CFTP's correctness never depends on mixing time, only its
-runtime does. Verified directly: at a1=a2=b1=b2=1, c1=c2=sqrt(8)
-(Delta=-3, deep antiferroelectric), CFTP coalesces correctly at n=40, 60,
-80 (1.8s, 8s, 27s respectively) — just needing substantially more
-half-sweeps than in the disordered regime. Runtime grows quickly with n in
-this regime, though, so for large n and extreme Delta, consider reducing n
-first. The UI shows a note when |Delta|>1 explaining this tradeoff.
+| `n` | exact flippable fraction | `n x fraction` |
+|---|---|---|
+| 8 | 0.1456 | 1.165 |
+| 10 | 0.1154 | 1.154 |
+| 12 | 0.0935 | 1.122 |
+| 14 | 0.0795 | 1.113 |
 
-**CFTP runs as a background job, not a single HTTP request.** On
-constrained/free hosting tiers, a CFTP run that takes minutes can exceed
-the platform's own request timeout, killing the connection before the
-(correct, still-running) computation can respond — this happened in
-practice at n=140 in the deep antiferroelectric regime on Render's free
-tier. `/api/exact/start` returns almost immediately with a job id; the
-actual computation runs in a background thread; the frontend polls
-`/api/exact/status/<job_id>` roughly once a second. Verified directly:
-individual poll requests stay under 15ms even while the underlying job
-runs for 10+ seconds in the background — the fix works regardless of how
-long the actual computation takes, not just for the specific cases we
-happened to test.
+i.e. it scales as about `1.14/n` and *decreases* with system size. Predicted
+at `n = 64`: `0.0178`. Measured by MCMC at `n = 64`: `0.0164`. At `n = 128`:
+predicted `0.0089`, measured `0.0081`.
 
-We looked into making *live* sampling (or CFTP at large n) fast in this
-regime too. That would require fundamentally different, non-local moves
-(cluster/worm-type algorithms). We checked the literature directly:
-transfer matrices for domain-wall boundary conditions are explicitly known
-to be non-diagonalizable in general — a real, documented structural
-obstruction, not something nobody has looked for. This would be new
-research if attempted, not a scoped engineering fix, so we haven't
-attempted it.
+So the chain equilibrates. A low flippable fraction in the antiferroelectric
+phase is the *correct* equilibrium behaviour, not evidence of being stuck: the
+zig-zag structure that dominates there leaves very few local extrema, which is
+exactly what a "flippable site" is. The c-vertex fraction, a better diagnostic,
+reaches 0.98 within 2000 sweeps at `n = 64` and 0.988 at `n = 128`.
+
+The visual impression of a "frozen" picture is likewise correct physics rather
+than a failure -- compare Figure 17 of arXiv:2309.12495, whose caption notes
+that in the gaseous region "the paths form a regular zig-zag pattern, with
+only occasional defects".
 
 ## Setup
 
@@ -186,12 +164,17 @@ Exact sampling now works as follows:
   no mixing time and no monotonicity requirement -- it is exact even deep in
   the ferroelectric/antiferroelectric regimes where local MCMC freezes.
   Verified against brute force to machine precision.
-- **n > 14, uniform weights only:** CFTP (`sixvertex/cftp.py`), which is
-  valid at that point.
-- **n > 14, non-uniform weights:** *no exact method is available.* The tool
-  refuses and says so, rather than returning a number it cannot justify.
-  Sequential sampling costs `C(n, n/2)` and CFTP is invalid there. Closing
-  this gap is an open problem, not an engineering task.
+- **n > 14, with `b1b2 >= a1a2` and `b1b2 >= c1c2`:** CFTP
+  (`sixvertex/cftp_exact.py`), using the correct four-face heat-bath rule.
+  The shared-uniform coupling of the extremal chains is monotone exactly on
+  this region, so CFTP is valid throughout it — not merely at the uniform
+  point, which lies on its boundary.
+- **n > 14, outside that region:** *no exact method is available.* This is not
+  a gap in the implementation: outside the region no monotone coupling of the
+  single-site update exists at all, since a monotone coupling forces the two
+  chains' flip-up marginals to be ordered and they are not. Sequential
+  sampling costs `C(n, n/2)`, so it cannot cover large n either. The tool
+  refuses rather than returning a number it cannot justify.
 
 See [ALGORITHM.md](ALGORITHM.md) for the full specification of both methods.
 
@@ -346,6 +329,107 @@ Two changes to `/api/init` and `/api/step` will break older scripts:
   matched no decision the server actually makes. `/api/exact/status` also
   hardcoded it to `true`, so the two endpoints contradicted each other for
   identical weights. Use `exact_available` instead.
+
+## Why large n outside the monotone region is not an engineering gap
+
+Exact sampling is unavailable for large `n` when `b1b2 < a1a2` or
+`b1b2 < c1c2`. Three separate facts explain why, and none of them is a
+missing feature.
+
+**The region never reaches the antiferroelectric phase.** With
+`A = a1a2, B = b1b2, C = c1c2`, the anisotropy is
+`Delta = (A + B - C) / (2 sqrt(AB))`. Inside the region `C <= B`, so
+`A + B - C >= A > 0` and hence
+
+    Delta >= sqrt(A/B) / 2 > 0.
+
+So the monotone region is contained in `{Delta > 0}`, and the whole
+antiferroelectric phase `Delta < -1` lies outside it. This is exactly the
+regime where the live MCMC visibly freezes, so the place a user most wants
+exact sampling is the place the region cannot reach.
+
+**Outside the region, CFTP is impossible rather than unimplemented.** A
+monotone coupling of a two-outcome update exists only if the marginals are
+ordered, and outside the region they are not — so no coupling of the
+single-site update is monotone, however it is constructed.
+
+**Non-monotone exact methods exist but inherit a different obstruction.**
+Bounding chains (Huber, *Perfect sampling using bounding chains*, Ann. Appl.
+Probab. 14 (2004); Häggström–Nelander; Kendall–Møller) give perfect sampling
+without monotonicity, so the argument above does not close them off. But
+they are still driven by the underlying local chain, and local chains for
+this model are provably torpidly mixing in both ordered phases — Liu,
+*Torpid Mixing of Markov Chains for the Six-vertex Model on Z^2*
+(APPROX/RANDOM 2018), covering Glauber dynamics and the directed-loop
+algorithm, strengthened for the ferroelectric case by Fahrbach–Randall
+(APPROX/RANDOM 2019).
+
+**DWBC does not escape this.** An earlier version of this section reported no
+degradation, but that test used `Delta = 1.5` — barely past the phase
+boundary — and read coalescence off the doubling schedule, which only reports
+powers of two. Measuring forward coalescence directly (the first sweep at
+which the two extremal chains agree) and going deeper into the phase shows
+the blow-up clearly. At `Delta = 5`:
+
+| `n` | sweeps to coalesce |
+|---|---|
+| 6 | 78 |
+| 8 | 1956 |
+| 10 | 32506 |
+
+That is roughly 20x per step of two in `n`, where `n^2` growth would be about
+1.6x — exponential, matching the torpid-mixing predictions.
+
+The onset is near `Delta = 2` rather than at the phase boundary `Delta = 1`.
+At `n = 12`: about 100 sweeps for `Delta <= 1.5`, 293 at `Delta = 2`, 1647 at
+`Delta = 2.5`, 4564 at `Delta = 3`.
+
+**Consequence: inside the region means correct, not fast.** The monotone
+region guarantees CFTP is *valid*; it says nothing about how long
+coalescence takes. Deep in the ferroelectric phase the tool would accept a
+large-`n` request and then run until the watchdog reaped it. The UI now warns
+when `Delta > 2` and `n` is above the sequential-sampler limit.
+
+Separately, computing the partition function itself is `#P`-hard for generic
+weights even on planar graphs (Cai–Fu–Shao trichotomy), which rules out the
+transfer-matrix route scaling to large `n`.
+
+## Performance of exact sampling
+
+CFTP cost scales as `n^4`: the number of sweeps to coalescence grows like
+`n^2`, and each sweep touches `O(n^2)` sites. Measured, weights `B=4, A=1, C=1`:
+
+| `n` | sweeps | wall clock |
+|---|---|---|
+| 32 | 2048 | 4.2 s |
+| 64 | 4096 | 10.6 s |
+| 100 | 16384 | 59 s |
+| 150 | — | ~5 min (projected) |
+| 200 | — | ~16 min (projected) |
+
+Two optimisations account for most of the current speed, both found by
+profiling rather than guesswork:
+
+1. **Packed-bit weight lookup.** The face-type classifier was a chain of six
+   full-array `np.where` calls, invoked 32 times per sweep — 79% of runtime.
+   Packing `(l,t,b,r)` into a 4-bit index and taking from a 16-entry table
+   replaces it with one gather.
+
+2. **Restricting to the active colour class.** Each sweep updates one colour
+   at a time, so three quarters of every array the classifier touched was
+   discarded immediately afterwards. Operating on flat indices of the active
+   sites cut per-sweep cost at `n=200` from 14.4 ms to 0.51 ms.
+
+Together these took the per-sweep cost at `n=200` from 18.8 ms to 0.51 ms,
+about 37x.
+
+**GPU.** `sixvertex/sampler.py` carries an optional torch path for the MCMC
+engine, but the CFTP sampler is numpy-only and the deployed instance is
+CPU-only by design (`requirements.txt` has no torch, and the free tier has no
+GPU). Porting the four-face rule to torch is the obvious next step for `n` in
+the high hundreds; it has not been done here because this environment has
+neither torch nor a GPU, and shipping unverified numerical code is exactly
+how the original CFTP weight bug happened.
 
 ## Tests
 
