@@ -73,8 +73,8 @@ def enumerate_height_functions(n):
 def classify_vertices(H, n):
     counts = {"a1": 0, "a2": 0, "b1": 0, "b2": 0, "c1": 0, "c2": 0}
     mapping = {(0, 0, 0, 0): "a1", (1, 1, 1, 1): "a2",
-               (1, 1, 0, 0): "b1", (0, 0, 1, 1): "b2",
-               (0, 1, 1, 0): "c1", (1, 0, 0, 1): "c2"}
+               (1, 1, 0, 0): "c1", (0, 0, 1, 1): "c2",
+               (0, 1, 1, 0): "b1", (1, 0, 0, 1): "b2"}
     for i in range(n):
         for j in range(n):
             t = 1 if H[i, j + 1] - H[i, j] == 1 else 0
@@ -931,33 +931,48 @@ def test_extreme_weights_behave_correctly_or_are_refused():
     Z -> 1 and every sample should be that configuration. Getting 0 c-vertices
     here is the correct answer, not underflow damage.
     """
-    # upward extremes must be refused, not silently wrong
-    for c in (1e3, 1e30):
+    # Upward extremes must be refused, not silently wrong. Under the
+    # corrected labels c is the weight the DWBC measure concentrates on, so
+    # c=1e3 is still representable (Z ~ 2e216); the guard fires further out,
+    # and on the a/b directions much sooner.
+    for w in ({**UNIFORM, "c1": 1e30, "c2": 1e30},
+              {**UNIFORM, "b1": 1e3,  "b2": 1e3},
+              {**UNIFORM, "a1": 1e30, "a2": 1e30}):
         try:
-            ExactSampler(12, {**UNIFORM, "c1": c, "c2": c})
+            ExactSampler(12, w)
         except RuntimeError as e:
             assert "overflow" in str(e).lower()
         else:
-            raise AssertionError(f"c={c} should have tripped the overflow guard")
+            raise AssertionError(f"{w} should have tripped the overflow guard")
 
-    # exactly one c-free configuration exists at each n
+    # Under the standard convention DWBC forces at least n c-vertices, and
+    # the minimum is achieved exactly by the n! permutation matrices. Both
+    # facts are wrong under the swapped labels this code used to carry, so
+    # they double as a check that the convention is right.
+    import math as _m
     for n in (3, 4, 5):
-        zero = sum(1 for H in enumerate_height_functions(n)
-                   if (classify_vertices(H, n)["c1"] +
-                       classify_vertices(H, n)["c2"]) == 0)
-        assert zero == 1, f"expected exactly one c-free config at n={n}, got {zero}"
+        cs = []
+        for H in enumerate_height_functions(n):
+            cv = classify_vertices(H, n)
+            cs.append(cv["c1"] + cv["c2"])
+        assert min(cs) == n, f"min c-count at n={n} is {min(cs)}, expected {n}"
+        assert sum(1 for x in cs if x == min(cs)) == _m.factorial(n), (
+            f"configs attaining the minimum c-count at n={n} should number n!")
 
-    # and the sampler concentrates there as c -> 0
-    n = 6
-    S = ExactSampler(n, {**UNIFORM, "c1": 1e-30, "c2": 1e-30})
-    assert abs(S.partition_function() - 1.0) < 1e-9, (
-        "Z should tend to 1 as c -> 0 (one surviving configuration)")
+    # Downward: as c -> 0 the measure concentrates on those minimal
+    # configurations, so Z -> n! * c^n and every sample attains c-count n.
+    n = 5
+    tiny = 1e-8
+    S = ExactSampler(n, {**UNIFORM, "c1": tiny, "c2": tiny})
+    Z = S.partition_function()
+    assert abs(Z / (_m.factorial(n) * tiny ** n) - 1.0) < 1e-6, (
+        f"Z should tend to n! c^n as c -> 0, got {Z}")
     rng = np.random.default_rng(5)
-    for _ in range(25):
+    for _ in range(20):
         H = S.sample(rng)
-        c = classify_vertices(H, n)
-        assert c["c1"] + c["c2"] == 0, (
-            "as c -> 0 every sample must be the unique c-free configuration")
+        cv = classify_vertices(H, n)
+        assert cv["c1"] + cv["c2"] == n, (
+            "as c -> 0 every sample must attain the minimum c-count")
 
 
 def test_action_controls_come_before_the_parameter_notes():
@@ -1182,9 +1197,9 @@ def test_arctic_circle_appears_in_an_exact_sample():
     n = 60
     H, _ = cftp_sample(n=n, c_up=1.0, c_down=1.0, master_seed=11, max_T=1 << 21)
     s = SixVertexSampler(n=n, a1=1, a2=1, b1=1, b2=1, c_up=1, c_down=1)
-    # Assign through the same branch server.py uses. Writing s.H directly with
-    # a numpy array breaks when torch is installed: height_array() then calls
-    # .detach() on it. Only reproducible on machines that have torch.
+    # Assign through the same branch server.py uses. Writing s.H directly
+    # with a numpy array breaks when torch is installed: height_array() then
+    # calls .detach() on it. Only reproducible on machines that have torch.
     if s.use_torch:
         import torch
         s.H = torch.from_numpy(np.asarray(H, dtype=np.float32)).to(s.device)
@@ -1216,11 +1231,16 @@ def test_cftp_valid_on_the_whole_monotone_region():
     """
     from sixvertex.cftp_exact import cftp_sample, in_monotone_region
 
+    # Corrected convention: the region is c1c2 >= a1a2 and c1c2 >= b1b2.
+    # This is the antiferroelectric-favouring direction, so it contains
+    # Delta < -1 -- including Gorin's Figure 17 bottom.
     inside = [
         dict(a1=1., a2=1., b1=1., b2=1., c1=1., c2=1.),      # boundary
-        dict(a1=1., a2=1., b1=2., b2=2., c1=1., c2=1.),
-        dict(a1=1., a2=1., b1=3., b2=3., c1=2., c2=2.),
-        dict(a1=1.5, a2=0.5, b1=1.2, b2=1.2, c1=1., c2=1.),  # a1 != a2
+        dict(a1=1., a2=1., b1=1., b2=1., c1=2., c2=2.),
+        dict(a1=1., a2=1., b1=2., b2=2., c1=3., c2=3.),
+        dict(a1=1.5, a2=0.5, b1=1., b2=1., c1=1.2, c2=1.2),  # a1 != a2
+        dict(a1=1., a2=1., b1=1., b2=1.,                     # Delta = -3
+             c1=math.sqrt(8), c2=math.sqrt(8)),
     ]
     for w in inside:
         assert in_monotone_region(w)
@@ -1236,8 +1256,8 @@ def test_cftp_valid_on_the_whole_monotone_region():
                 assert abs(int(H[i+1, j]) - int(H[i, j])) == 1
 
     outside = [
-        dict(a1=1., a2=1., b1=1., b2=1., c1=1.5, c2=1.5),    # C > B
-        dict(a1=2., a2=2., b1=1., b2=1., c1=1., c2=1.),      # A > B
+        dict(a1=1., a2=1., b1=1.5, b2=1.5, c1=1., c2=1.),    # B > C
+        dict(a1=2., a2=2., b1=1., b2=1., c1=1., c2=1.),      # A > C
     ]
     for w in outside:
         assert not in_monotone_region(w)
@@ -1253,7 +1273,7 @@ def test_cftp_exact_matches_brute_force():
     """The corrected CFTP must sample the right measure, not merely coalesce."""
     from sixvertex.cftp_exact import cftp_sample
     n = 4
-    w = dict(a1=1., a2=1., b1=2., b2=2., c1=1., c2=1.)
+    w = dict(a1=1., a2=1., b1=1., b2=1., c1=2., c2=2.)
     cfgs, probs, _ = exact_distribution(n, w)
     keys = {c.astype(np.int64).tobytes(): i for i, c in enumerate(cfgs)}
     counts = np.zeros(len(cfgs))
@@ -1310,6 +1330,100 @@ def test_stochastic_six_vertex_sampler():
             pass
         else:
             raise AssertionError(f"b1={bad} should have been rejected")
+
+
+def test_live_equilibration_diagnostic_exists():
+    """The site warned about slow mixing with a static note, which reads as
+    boilerplate. A collaborator tested n=80 at Delta=-3, saw the configuration
+    sit on the diagonal, and reported it as broken.
+
+    The code was not broken -- the browser engine reproduces the exact
+    distribution at n=5 to within 0.0016 over all 429 configurations, and
+    mixes fine at n=40. But at n=80 two chains started from opposite extremal
+    configurations disagreed by 0.131 in c-vertex density after 20000 sweeps,
+    against a seed-to-seed spread of 0.017. It had not mixed, and the tool
+    presented that as if it were a sample.
+
+    So the UI now runs the diagnostic live: a shadow chain from the opposite
+    start, with the observed disagreement reported on screen.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    assert "makeShadow" in code, "no shadow chain for the equilibration check"
+    assert "updateMixingBadge" in code, "no live mixing diagnostic"
+    assert 'id="mixing-badge"' in html, "no element to report the diagnostic"
+    # the shadow must start from the OTHER extremal configuration, else the
+    # comparison is vacuous
+    blk = code[code.index("function makeShadow"):]
+    blk = blk[:blk.index("function cFraction")]
+    assert "Math.min" in blk, (
+        "shadow chain does not start from the maximal height function; two "
+        "chains from the same start cannot detect failure to mix")
+    # and it must actually be advanced alongside the main chain
+    assert "shadow.step(sweeps)" in code, "shadow chain is never advanced"
+
+
+def test_convention_matches_izergin_korepin():
+    """Pin the face-label convention to the literature.
+
+    This code originally had b and c swapped relative to the standard
+    six-vertex convention. The consequences were not cosmetic: the reported
+    Delta had the wrong sign structure, and the monotone region was stated as
+    b-dominant when it is c-dominant. Because the region is in fact the
+    antiferroelectric-favouring one, Delta = -3 -- which a collaborator kept
+    reporting as stuck -- is actually inside it and exactly samplable.
+
+    The check: the Izergin-Korepin determinant for DWBC must reproduce our
+    partition function in the SAME weight slots. IK is itself validated here
+    by giving the ASM numbers at the ice point.
+    """
+    mp = pytest_importorskip_mpmath()
+    if mp is None:
+        return
+    mp.mp.dps = 40
+
+    def Z_IK(N, eta, lam, trig):
+        f = mp.sin if trig else mp.sinh
+        def phi(x): return f(2*eta) / (f(eta - x) * f(eta + x))
+        M = mp.matrix(N, N)
+        for i in range(N):
+            for j in range(N):
+                M[i, j] = mp.diff(phi, lam, i + j)
+        d = mp.mpf(1)
+        for k in range(N):
+            d *= mp.factorial(k)
+        return float((f(eta-lam) * f(eta+lam))**(N*N) * mp.det(M) / d**2)
+
+    # (a) IK is correct: ice point gives the ASM numbers
+    eta, lam = mp.pi/3, mp.mpf(0)
+    a = float(mp.sin(eta))
+    for N, asm in zip(range(1, 6), [1, 2, 7, 42, 429]):
+        assert abs(Z_IK(N, eta, lam, True) / a**(N*N) - asm) < 1e-6, (
+            "IK implementation fails the ASM check")
+
+    # (b) our sampler matches IK in the same slots at Delta = -3
+    eta, lam = mp.acosh(3)/2, mp.mpf(0)
+    a = float(mp.sinh(eta-lam)); b = float(mp.sinh(eta+lam)); c = float(mp.sinh(2*eta))
+    assert abs((a*a + b*b - c*c) / (2*a*b) + 3.0) < 1e-9
+    w = dict(a1=a, a2=a, b1=b, b2=b, c1=c, c2=c)
+    for N in range(1, 5):
+        ours = ExactSampler(N, w).partition_function()
+        ik = Z_IK(N, eta, lam, False)
+        assert abs(ours - ik) / ik < 1e-9, (
+            f"N={N}: ours={ours} but IK={ik}; the b/c convention has slipped")
+
+
+def pytest_importorskip_mpmath():
+    try:
+        import mpmath
+        return mpmath
+    except ImportError:
+        return None
 
 
 if __name__ == "__main__":

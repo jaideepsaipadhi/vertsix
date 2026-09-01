@@ -19,16 +19,29 @@ from __future__ import annotations
 import numpy as np
 
 FACE = {(0, 0, 0, 0): "a1", (1, 1, 1, 1): "a2",
-        (1, 1, 0, 0): "b1", (0, 0, 1, 1): "b2",
-        (0, 1, 1, 0): "c1", (1, 0, 0, 1): "c2"}
+        (1, 1, 0, 0): "c1", (0, 0, 1, 1): "c2",
+        (0, 1, 1, 0): "b1", (1, 0, 0, 1): "b2"}
 
 
 def in_monotone_region(w, tol=1e-12):
-    """Monotone iff b1b2 >= a1a2 and b1b2 >= c1c2."""
+    """Monotone iff c1c2 >= a1a2 and c1c2 >= b1b2.
+
+    The hand calculation was done in this code's original labelling, where
+    it read b1b2 >= a1a2 and b1b2 >= c1c2. Those labels had b and c swapped
+    relative to the standard six-vertex convention (confirmed against the
+    Izergin-Korepin determinant, and by the fact that the single N=1
+    DWBC configuration is a c-vertex). With the labels corrected, the same
+    theorem reads with c dominant.
+
+    This is the antiferroelectric-favouring direction, so the monotone
+    region *contains* Delta < -1 rather than excluding it: Gorin's Figure 17
+    bottom (a=b=1, c=sqrt(8), Delta=-3) lies inside it and can be sampled
+    exactly.
+    """
     A = w["a1"] * w["a2"]
     B = w["b1"] * w["b2"]
     C = w["c1"] * w["c2"]
-    return (B >= A - tol) and (B >= C - tol)
+    return (C >= A - tol) and (C >= B - tol)
 
 
 def _weight_table(w):
@@ -42,10 +55,10 @@ def _weight_table(w):
     tbl = np.zeros(16, dtype=np.float64)
     tbl[0 * 8 + 0 * 4 + 0 * 2 + 0] = w["a1"]   # (l,t,b,r) = 0,0,0,0
     tbl[1 * 8 + 1 * 4 + 1 * 2 + 1] = w["a2"]   # 1,1,1,1
-    tbl[1 * 8 + 1 * 4 + 0 * 2 + 0] = w["b1"]   # 1,1,0,0
-    tbl[0 * 8 + 0 * 4 + 1 * 2 + 1] = w["b2"]   # 0,0,1,1
-    tbl[0 * 8 + 1 * 4 + 1 * 2 + 0] = w["c1"]   # 0,1,1,0
-    tbl[1 * 8 + 0 * 4 + 0 * 2 + 1] = w["c2"]   # 1,0,0,1
+    tbl[1 * 8 + 1 * 4 + 0 * 2 + 0] = w["c1"]   # 1,1,0,0
+    tbl[0 * 8 + 0 * 4 + 1 * 2 + 1] = w["c2"]   # 0,0,1,1
+    tbl[0 * 8 + 1 * 4 + 1 * 2 + 0] = w["b1"]   # 0,1,1,0
+    tbl[1 * 8 + 0 * 4 + 0 * 2 + 1] = w["b2"]   # 1,0,0,1
     return tbl
 
 
@@ -140,7 +153,7 @@ def cftp_sample(n, weights, master_seed=None, initial_T=8, max_T=1 << 20,
         C = weights["c1"] * weights["c2"]
         raise ValueError(
             f"weights outside the monotone region (A={A:.4g}, B={B:.4g}, "
-            f"C={C:.4g}): CFTP requires b1b2 >= a1a2 and b1b2 >= c1c2. "
+            f"C={C:.4g}): CFTP requires c1c2 >= a1a2 and c1c2 >= b1b2. "
             f"Outside it no coupling of the update is monotone, so no CFTP "
             f"scheme is valid here."
         )

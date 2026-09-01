@@ -330,69 +330,37 @@ Two changes to `/api/init` and `/api/step` will break older scripts:
   hardcoded it to `true`, so the two endpoints contradicted each other for
   identical weights. Use `exact_available` instead.
 
-## Why large n outside the monotone region is not an engineering gap
+## Convention correction (important)
 
-Exact sampling is unavailable for large `n` when `b1b2 < a1a2` or
-`b1b2 < c1c2`. Three separate facts explain why, and none of them is a
-missing feature.
+The face labels `b` and `c` were previously swapped relative to the standard
+six-vertex convention. Three independent checks establish this:
 
-**The region never reaches the antiferroelectric phase.** With
-`A = a1a2, B = b1b2, C = c1c2`, the anisotropy is
-`Delta = (A + B - C) / (2 sqrt(AB))`. Inside the region `C <= B`, so
-`A + B - C >= A > 0` and hence
+* the single DWBC configuration at `N = 1` is a `c`-vertex in the standard
+  convention; this code classified it as `b1`;
+* the conserved count under DWBC sits on the `c`-types in the standard
+  convention (minimum `c`-count is `n`, attained by exactly `n!`
+  configurations, the permutation matrices); this code had it on the
+  `b`-types;
+* the Izergin-Korepin determinant for DWBC -- validated here by reproducing
+  the ASM numbers 1, 2, 7, 42, 429, 7436, 218348 at the ice point -- matched
+  this code's partition function only with `b` and `c` exchanged.
 
-    Delta >= sqrt(A/B) / 2 > 0.
+This was not cosmetic. The monotone region derived by hand read
+`b1b2 >= a1a2` and `b1b2 >= c1c2` in the old labels. In standard labels the
+same theorem reads
 
-So the monotone region is contained in `{Delta > 0}`, and the whole
-antiferroelectric phase `Delta < -1` lies outside it. This is exactly the
-regime where the live MCMC visibly freezes, so the place a user most wants
-exact sampling is the place the region cannot reach.
+    c1c2 >= a1a2   and   c1c2 >= b1b2
 
-**Outside the region, CFTP is impossible rather than unimplemented.** A
-monotone coupling of a two-outcome update exists only if the marginals are
-ordered, and outside the region they are not — so no coupling of the
-single-site update is monotone, however it is constructed.
+which is the *antiferroelectric-favouring* direction. So the earlier claim
+that the region "never reaches the antiferroelectric phase" was exactly
+backwards: `Delta = -3` (`a = b = 1`, `c = sqrt(8)`, Figure 17 bottom of
+arXiv:2309.12495) lies **inside** the region and is exactly samplable by
+CFTP -- measured, `n = 80` in 52 seconds with zero monotonicity violations.
 
-**Non-monotone exact methods exist but inherit a different obstruction.**
-Bounding chains (Huber, *Perfect sampling using bounding chains*, Ann. Appl.
-Probab. 14 (2004); Häggström–Nelander; Kendall–Møller) give perfect sampling
-without monotonicity, so the argument above does not close them off. But
-they are still driven by the underlying local chain, and local chains for
-this model are provably torpidly mixing in both ordered phases — Liu,
-*Torpid Mixing of Markov Chains for the Six-vertex Model on Z^2*
-(APPROX/RANDOM 2018), covering Glauber dynamics and the directed-loop
-algorithm, strengthened for the ferroelectric case by Fahrbach–Randall
-(APPROX/RANDOM 2019).
-
-**DWBC does not escape this.** An earlier version of this section reported no
-degradation, but that test used `Delta = 1.5` — barely past the phase
-boundary — and read coalescence off the doubling schedule, which only reports
-powers of two. Measuring forward coalescence directly (the first sweep at
-which the two extremal chains agree) and going deeper into the phase shows
-the blow-up clearly. At `Delta = 5`:
-
-| `n` | sweeps to coalesce |
-|---|---|
-| 6 | 78 |
-| 8 | 1956 |
-| 10 | 32506 |
-
-That is roughly 20x per step of two in `n`, where `n^2` growth would be about
-1.6x — exponential, matching the torpid-mixing predictions.
-
-The onset is near `Delta = 2` rather than at the phase boundary `Delta = 1`.
-At `n = 12`: about 100 sweeps for `Delta <= 1.5`, 293 at `Delta = 2`, 1647 at
-`Delta = 2.5`, 4564 at `Delta = 3`.
-
-**Consequence: inside the region means correct, not fast.** The monotone
-region guarantees CFTP is *valid*; it says nothing about how long
-coalescence takes. Deep in the ferroelectric phase the tool would accept a
-large-`n` request and then run until the watchdog reaped it. The UI now warns
-when `Delta > 2` and `n` is above the sequential-sampler limit.
-
-Separately, computing the partition function itself is `#P`-hard for generic
-weights even on planar graphs (Cai–Fu–Shao trichotomy), which rules out the
-transfer-matrix route scaling to large `n`.
+The labels are now corrected in all four engines (`sampler.py`, `exact.py`,
+`cftp_exact.py`, `static/sixvertex.js`) and in the test classifier. This is a
+breaking change: a given set of slider values means something different than
+it did before.
 
 ## Performance of exact sampling
 

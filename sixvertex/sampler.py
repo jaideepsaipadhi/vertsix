@@ -90,10 +90,10 @@ class SixVertexSampler:
         w = np.ones_like(top, dtype=np.float64)
         w = np.where((~l) & (~t) & (~b) & (~r), self.a1, w)
         w = np.where(l & t & b & r, self.a2, w)
-        w = np.where(l & t & (~b) & (~r), self.b1, w)
-        w = np.where((~l) & (~t) & b & r, self.b2, w)
-        w = np.where((~l) & t & b & (~r), self.c1, w)
-        w = np.where(l & (~t) & (~b) & r, self.c2, w)
+        w = np.where(l & t & (~b) & (~r), self.c1, w)
+        w = np.where((~l) & (~t) & b & r, self.c2, w)
+        w = np.where((~l) & t & b & (~r), self.b1, w)
+        w = np.where(l & (~t) & (~b) & r, self.b2, w)
         return w
 
     def _step_numpy(self, sweeps):
@@ -159,10 +159,10 @@ class SixVertexSampler:
         w = torch.ones_like(top, dtype=torch.float64)
         w = torch.where((~l) & (~t) & (~b) & (~r), torch.tensor(self.a1, device=w.device, dtype=w.dtype), w)
         w = torch.where(l & t & b & r, torch.tensor(self.a2, device=w.device, dtype=w.dtype), w)
-        w = torch.where(l & t & (~b) & (~r), torch.tensor(self.b1, device=w.device, dtype=w.dtype), w)
-        w = torch.where((~l) & (~t) & b & r, torch.tensor(self.b2, device=w.device, dtype=w.dtype), w)
-        w = torch.where((~l) & t & b & (~r), torch.tensor(self.c1, device=w.device, dtype=w.dtype), w)
-        w = torch.where(l & (~t) & (~b) & r, torch.tensor(self.c2, device=w.device, dtype=w.dtype), w)
+        w = torch.where(l & t & (~b) & (~r), torch.tensor(self.c1, device=w.device, dtype=w.dtype), w)
+        w = torch.where((~l) & (~t) & b & r, torch.tensor(self.c2, device=w.device, dtype=w.dtype), w)
+        w = torch.where((~l) & t & b & (~r), torch.tensor(self.b1, device=w.device, dtype=w.dtype), w)
+        w = torch.where(l & (~t) & (~b) & r, torch.tensor(self.b2, device=w.device, dtype=w.dtype), w)
         return w
 
     def _step_torch(self, sweeps):

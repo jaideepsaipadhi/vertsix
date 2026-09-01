@@ -20,10 +20,10 @@ function classifyFace(tl, tr, bl, br, w) {
   const t = top === 1, b = bottom === 1, l = left === 1, r = right === 1;
   if (!l && !t && !b && !r) return w.a1;
   if (l && t && b && r) return w.a2;
-  if (l && t && !b && !r) return w.b1;
-  if (!l && !t && b && r) return w.b2;
-  if (!l && t && b && !r) return w.c1;
-  if (l && !t && !b && r) return w.c2;
+  if (l && t && !b && !r) return w.c1;
+  if (!l && !t && b && r) return w.c2;
+  if (!l && t && b && !r) return w.b1;
+  if (l && !t && !b && r) return w.b2;
   return 1;
 }
 
