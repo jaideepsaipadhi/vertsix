@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vertsix"
+version = "0.1.0"
+description = "Exact samplers for the six-vertex model with domain-wall boundary conditions"
+readme = "PACKAGE.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Jaideep Sai Padhi" }]
+keywords = [
+    "six-vertex model",
+    "statistical mechanics",
+    "exact sampling",
+    "coupling from the past",
+    "alternating sign matrices",
+    "domain wall boundary conditions",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+# The samplers need numpy and nothing else. Flask and gunicorn belong to the
+# web demo, not to the library, and torch is an optional accelerator for the
+# MCMC engine only -- so neither is a hard dependency.
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+torch = ["torch>=2.0"]
+web = ["flask>=2.3", "gunicorn>=21.2"]
+dev = ["mpmath>=1.3", "matplotlib>=3.7"]
+
+[project.urls]
+Homepage = "https://vertsix.com"
+Source = "https://github.com/jaideepsaipadhi/vertsix"
+Issues = "https://github.com/jaideepsaipadhi/vertsix/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sixvertex"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/sixvertex",
+    "/tests",
+    "/PACKAGE.md",
+    "/README.md",
+    "/ALGORITHM.md",
+    "/LICENSE",
+]

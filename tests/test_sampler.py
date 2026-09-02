@@ -1426,6 +1426,48 @@ def pytest_importorskip_mpmath():
         return None
 
 
+def test_package_surface_is_installable_and_minimal():
+    """The library must be usable without the web app.
+
+    The samplers need only numpy; Flask and gunicorn belong to the demo and
+    torch is an optional accelerator for the MCMC engine. If any of those
+    became a hard dependency, installing the library would drag in a web
+    stack, so pin the declared dependency list.
+    """
+    import os, re
+    here = os.path.dirname(__file__)
+    toml = open(os.path.join(here, "..", "pyproject.toml")).read()
+
+    m = re.search(r"^dependencies = \[(.*?)\]", toml, re.S | re.M)
+    assert m, "pyproject.toml declares no dependencies list"
+    deps = m.group(1).lower()
+    for forbidden in ("flask", "gunicorn", "torch", "matplotlib", "mpmath"):
+        assert forbidden not in deps, (
+            f"{forbidden} must not be a hard dependency of the library")
+    assert "numpy" in deps
+
+    # the public API must actually exist
+    import sixvertex as sv
+    for name in ("sample", "delta", "exact_sample", "cftp_sample",
+                 "in_monotone_region", "SixVertexSampler", "stochastic",
+                 "MAX_EXACT_N", "__version__"):
+        assert hasattr(sv, name), f"public API is missing {name}"
+
+    # and route correctly, including refusing when nothing is valid
+    w = dict(a1=1., a2=1., b1=1., b2=1., c1=math.sqrt(8), c2=math.sqrt(8))
+    assert abs(sv.delta(w) + 3.0) < 1e-12
+    _, info = sv.sample(8, w, seed=1)
+    assert info["method"] == "exact-sequential"
+    _, info = sv.sample(20, w, seed=1)
+    assert info["method"] == "cftp"
+    try:
+        sv.sample(40, dict(a1=1., a2=1., b1=3., b2=3., c1=1., c2=1.), seed=1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("sample() must refuse when no exact method applies")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
