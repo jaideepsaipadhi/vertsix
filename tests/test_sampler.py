@@ -1468,6 +1468,42 @@ def test_package_surface_is_installable_and_minimal():
         raise AssertionError("sample() must refuse when no exact method applies")
 
 
+def test_poll_loop_tolerates_transient_failures():
+    """Regression: a long exact job means many status polls -- a 16 minute run
+    at one poll a second is about a thousand requests. The loop had no failure
+    tolerance, so a SINGLE bad response abandoned the whole computation even
+    though the server was still working on it.
+
+    A proxy timeout returns an HTML error page, and `await res.json()` on that
+    throws SyntaxError rather than returning {ok:false}, so it escaped to the
+    outer catch. Verified in a browser: six consecutive failures (mixed
+    connection aborts and 524 HTML pages) now recover and the job completes;
+    before, the first one killed it.
+
+    Observed in production: n=80 at Delta=-3 completed server-side in 982s
+    while the browser session died at ~434s.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    src = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    start = code.index("const jobId = startData.job_id")
+    loop = code[start:start + 3000]
+
+    assert "MAX_CONSECUTIVE_FAILURES" in loop, (
+        "poll loop has no tolerance for transient status-check failures")
+    assert "consecutiveFailures = 0" in loop, (
+        "failure counter is never reset, so isolated failures accumulate")
+    # the fetch/json pair must be individually guarded, not just the whole loop
+    assert loop.index("try {") < loop.index("await fetch(`/api/exact/status"), (
+        "the status fetch is not inside its own try block")
+    # and the interval must back off rather than hammering for 45 minutes
+    assert "elapsedPolling < 30" in loop and "5000" in loop, (
+        "poll interval does not back off as the job ages")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

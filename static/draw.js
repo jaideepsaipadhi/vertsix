@@ -819,18 +819,54 @@
       // tab is closed -- with the button stuck disabled the whole time.
       const POLL_LIMIT_SECONDS = 45 * 60;
       let finished = false;
-      let polls = 0;
+      let elapsedPolling = 0;
+      let consecutiveFailures = 0;
+      // A long job means many polls -- a 16 minute run at one poll a second
+      // is about a thousand requests. Previously ANY single failure among
+      // them threw out of the loop and abandoned the computation, even
+      // though the server was still working on it happily. One hiccup in a
+      // thousand requests over a free-tier host behind a proxy is close to
+      // certain, and a proxy timeout returns an HTML error page, which makes
+      // .json() throw rather than returning {ok:false}.
+      //
+      // So: tolerate isolated failures, and back the interval off as the job
+      // ages so a long run does not hammer the server it is waiting on.
+      const MAX_CONSECUTIVE_FAILURES = 15;
       while (!finished) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        if (++polls > POLL_LIMIT_SECONDS) {
+        const interval = elapsedPolling < 30 ? 1000
+                       : elapsedPolling < 120 ? 2000 : 5000;
+        await new Promise(resolve => setTimeout(resolve, interval));
+        elapsedPolling += interval / 1000;
+        if (elapsedPolling > POLL_LIMIT_SECONDS) {
           exactInfo.textContent =
             "gave up waiting for the server after 45 minutes; the job may " +
             "still be running. Try a smaller n.";
           hudStatus.textContent = "ready";
           break;
         }
-        const statusRes = await fetch(`/api/exact/status/${jobId}`);
-        const statusData = await statusRes.json();
+
+        let statusData = null;
+        try {
+          const statusRes = await fetch(`/api/exact/status/${jobId}`);
+          statusData = await statusRes.json();
+          consecutiveFailures = 0;
+        } catch (pollErr) {
+          consecutiveFailures++;
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            exactInfo.textContent =
+              `lost contact with the server after ${consecutiveFailures} ` +
+              `consecutive failed status checks; the job may still be ` +
+              `running on the server.`;
+            hudStatus.textContent = "ready";
+            break;
+          }
+          // transient: keep waiting, the computation is still going
+          exactInfo.textContent =
+            `still running (status check retrying, ` +
+            `${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES})`;
+          continue;
+        }
+
         if (!statusData.ok) {
           exactInfo.textContent = `status check failed: ${statusData.error}`;
           hudStatus.textContent = "ready";
