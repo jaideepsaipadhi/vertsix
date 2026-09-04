@@ -364,40 +364,44 @@ it did before.
 
 ## Performance of exact sampling
 
-CFTP cost scales as `n^4`: the number of sweeps to coalescence grows like
-`n^2`, and each sweep touches `O(n^2)` sites. Measured, weights `B=4, A=1, C=1`:
+CFTP cost scales as `n^4`: sweeps to coalescence grow like `n^2`, and each
+sweep touches `O(n^2)` sites.
 
-| `n` | sweeps | wall clock |
-|---|---|---|
-| 32 | 2048 | 4.2 s |
-| 64 | 4096 | 10.6 s |
-| 100 | 16384 | 59 s |
-| 150 | — | ~5 min (projected) |
-| 200 | — | ~16 min (projected) |
+Three optimisations, all found by profiling rather than guesswork:
 
-Two optimisations account for most of the current speed, both found by
-profiling rather than guesswork:
-
-1. **Packed-bit weight lookup.** The face-type classifier was a chain of six
-   full-array `np.where` calls, invoked 32 times per sweep — 79% of runtime.
+1. **Packed-bit weight lookup.** The face classifier was a chain of six
+   full-array `np.where` calls invoked 32 times per sweep -- 79% of runtime.
    Packing `(l,t,b,r)` into a 4-bit index and taking from a 16-entry table
    replaces it with one gather.
 
-2. **Restricting to the active colour class.** Each sweep updates one colour
-   at a time, so three quarters of every array the classifier touched was
-   discarded immediately afterwards. Operating on flat indices of the active
-   sites cut per-sweep cost at `n=200` from 14.4 ms to 0.51 ms.
+2. **Restriction to the active colour class.** Each sweep updates one colour,
+   so three quarters of every array the classifier touched was discarded
+   immediately. Per-sweep cost at `n=200` fell from 14.4 ms to 0.51 ms.
 
-Together these took the per-sweep cost at `n=200` from 18.8 ms to 0.51 ms,
-about 37x.
+3. **Optional compiled sweep** (`pip install vertsix[fast]`). The numpy sweep
+   still allocates a dozen temporaries per colour class; a compiled explicit
+   loop avoids them. Measured 76x at `n=40`, 30x at `n=80`, 16x at `n=128`,
+   with **bit-for-bit identical output** -- the same random values are
+   consumed at the same positions, so it is the same computation rather than
+   an approximation. Without numba everything falls back to numpy, which stays
+   the reference implementation.
 
-**GPU.** `sixvertex/sampler.py` carries an optional torch path for the MCMC
-engine, but the CFTP sampler is numpy-only and the deployed instance is
-CPU-only by design (`requirements.txt` has no torch, and the free tier has no
-GPU). Porting the four-face rule to torch is the obvious next step for `n` in
-the high hundreds; it has not been done here because this environment has
-neither torch nor a GPU, and shipping unverified numerical code is exactly
-how the original CFTP weight bug happened.
+End to end at `Delta = -3` (`a=b=1`, `c=sqrt(8)`), locally:
+
+| `n` | sweeps | numpy | compiled |
+|---|---|---|---|
+| 40 | 2048 | 4.1 s | 0.25 s |
+| 80 | 16384 | 52 s | 5.9 s |
+
+Coalescence time is itself random, so these vary run to run: two `n=80` runs
+with identical settings took 484 s and 982 s on the deployed instance before
+the compiled sweep landed.
+
+**GPU.** Not implemented. A port would be untestable in the environments
+available here and undeployable on the current host, and shipping unverified
+numerical code is exactly how the original CFTP weight bug survived for
+months. The compiled CPU sweep above was taken instead because its output can
+be checked against the numpy reference exactly.
 
 ## Tests
 

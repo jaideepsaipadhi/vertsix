@@ -1504,6 +1504,35 @@ def test_poll_loop_tolerates_transient_failures():
         "poll interval does not back off as the job ages")
 
 
+def test_compiled_sweep_matches_numpy_exactly():
+    """The optional compiled sweep must be the SAME computation, not an
+    approximation: it consumes the same random values at the same positions,
+    so for a given seed it must reproduce the numpy result bit for bit.
+
+    Measured speedups: 76x at n=40, 30x at n=80, 16x at n=128; end to end
+    n=80 at Delta=-3 went from 52s to 5.9s at the same 16384 sweeps.
+    numba is optional -- without it the numpy path is used and remains the
+    reference.
+    """
+    import sixvertex.cftp_exact as ce
+    if not ce._HAS_NUMBA:
+        return                      # nothing to compare against
+
+    w = dict(a1=1., a2=1., b1=1., b2=1.,
+             c1=math.sqrt(8), c2=math.sqrt(8))
+    for seed in range(4):
+        ce._HAS_NUMBA = True
+        A, ia = ce.cftp_sample(16, w, master_seed=seed)
+        ce._HAS_NUMBA = False
+        B, ib = ce.cftp_sample(16, w, master_seed=seed)
+        ce._HAS_NUMBA = True
+        assert np.array_equal(A, B), (
+            f"compiled and numpy sweeps disagree at seed {seed}")
+        assert ia["sweeps"] == ib["sweeps"], (
+            "compiled path coalesces at a different time; the randomness is "
+            "not being consumed identically")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
