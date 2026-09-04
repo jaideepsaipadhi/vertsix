@@ -394,8 +394,21 @@ End to end at `Delta = -3` (`a=b=1`, `c=sqrt(8)`), locally:
 | 40 | 2048 | 4.1 s | 0.25 s |
 | 80 | 16384 | 52 s | 5.9 s |
 
-Through the server, `n=80` at `Delta=-3` now completes in **6.0 s** (16384
-sweeps) where the same run took 52 s on the numpy path.
+4. **Adaptive starting window.** The doubling schedule runs 8, 16, ... up to
+   the coalescence time `T`, so total work is `2T - T_start` -- starting at 8
+   does roughly twice the sweeps the answer needs. Starting nearer `T` removes
+   that. Restricted to `n >= 64`: `T/n^2` is not constant (about 0.9 at n=24
+   rising to 5 at n=80), so a fixed factor overshoots at small n, and
+   overshooting costs work. Measured: no change below the threshold, 50% fewer
+   sweeps at `n=80` and `n=96`.
+
+   This affects efficiency only -- coalescence certifies the sample, so any
+   window is exact. Confirmed by sampling: max deviation from the brute-force
+   law at n=4 was 0.0151 with both `start=8` and `start=1024`.
+
+Through the server, `n=80` at `Delta=-3` completed in **6.0 s** with the
+compiled sweep alone (16384 sweeps), against 52 s on the numpy path; with the
+adaptive window it is **2.5 s** locally.
 
 Coalescence time is itself random and the spread is large: `n=80` runs with
 identical settings have needed 8192, 16384 and 32768 sweeps. Two runs on the

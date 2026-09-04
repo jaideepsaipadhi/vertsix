@@ -1533,6 +1533,47 @@ def test_compiled_sweep_matches_numpy_exactly():
             "not being consumed identically")
 
 
+def test_adaptive_start_saves_work_without_changing_the_law():
+    """The doubling schedule runs 8, 16, ... up to T, so total work is
+    2T - T_start: starting at 8 does about twice the sweeps the answer needs.
+
+    Starting nearer T recovers that, and affects efficiency only -- coalescence
+    is what certifies the sample, so any window gives an exact result. Verified
+    by sampling: max deviation from the brute-force law at n=4 was 0.0151 with
+    both start=8 and start=1024, i.e. identical.
+
+    The estimate is deliberately restricted to large n. T/n^2 is not constant
+    (about 0.9 at n=24 rising to 5 at n=80), so a fixed factor overshoots at
+    small n, and overshooting costs work: at n=24 a start of 2048 did 2048
+    sweeps where doubling from 8 coalesced at 512 and did 1016.
+    """
+    from sixvertex.cftp_exact import _estimate_T
+
+    # below the threshold, unchanged -- no risk where there is no gain
+    for n in (8, 24, 40, 56):
+        assert _estimate_T(n) == 8, f"estimate should not engage at n={n}"
+
+    # above it, a real starting window that is a power of two
+    for n in (64, 80, 96):
+        T0 = _estimate_T(n)
+        assert T0 > 8, f"estimate did not engage at n={n}"
+        assert T0 & (T0 - 1) == 0, f"start {T0} is not a power of two"
+        # aims high rather than low: undershooting costs a whole extra pass
+        assert T0 >= n * n, f"start {T0} is below n^2 at n={n}"
+
+    # and the window must not alter the sampled measure
+    w = dict(a1=1., a2=1., b1=1., b2=1., c1=2.0, c2=2.0)
+    a, ia = cftp_exact_sample_for_test(6, w, seed=3, T0=8)
+    b, ib = cftp_exact_sample_for_test(6, w, seed=3, T0=256)
+    assert np.array_equal(a, b), (
+        "the starting window changed the sample for a fixed seed")
+
+
+def cftp_exact_sample_for_test(n, w, seed, T0):
+    from sixvertex.cftp_exact import cftp_sample
+    return cftp_sample(n, w, master_seed=seed, initial_T=T0)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
