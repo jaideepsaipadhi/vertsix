@@ -378,7 +378,8 @@ Three optimisations, all found by profiling rather than guesswork:
    so three quarters of every array the classifier touched was discarded
    immediately. Per-sweep cost at `n=200` fell from 14.4 ms to 0.51 ms.
 
-3. **Optional compiled sweep** (`pip install vertsix[fast]`). The numpy sweep
+3. **Compiled sweep** (numba; `pip install vertsix[fast]` for library use,
+   and in `requirements.txt` for the deployed app). The numpy sweep
    still allocates a dozen temporaries per colour class; a compiled explicit
    loop avoids them. Measured 76x at `n=40`, 30x at `n=80`, 16x at `n=128`,
    with **bit-for-bit identical output** -- the same random values are
@@ -393,9 +394,18 @@ End to end at `Delta = -3` (`a=b=1`, `c=sqrt(8)`), locally:
 | 40 | 2048 | 4.1 s | 0.25 s |
 | 80 | 16384 | 52 s | 5.9 s |
 
-Coalescence time is itself random, so these vary run to run: two `n=80` runs
-with identical settings took 484 s and 982 s on the deployed instance before
-the compiled sweep landed.
+Through the server, `n=80` at `Delta=-3` now completes in **6.0 s** (16384
+sweeps) where the same run took 52 s on the numpy path.
+
+Coalescence time is itself random and the spread is large: `n=80` runs with
+identical settings have needed 8192, 16384 and 32768 sweeps. Two runs on the
+deployed instance took 484 s and 982 s before the compiled sweep landed.
+
+**Memory.** numba costs about 139 MB resident (llvmlite dominates). Measured
+worst case for this app -- numba loaded, JIT warm, and the exact-sampler cache
+full -- is 263 MB against the 512 MB free tier, leaving roughly 249 MB of
+headroom. That is why it is a hard requirement for the deployed app rather
+than an optional extra.
 
 **GPU.** Not implemented. A port would be untestable in the environments
 available here and undeployable on the current host, and shipping unverified

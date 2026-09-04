@@ -1,3 +1,13 @@
 flask>=2.3
 numpy>=1.24
 gunicorn>=21.2
+# Compiled CFTP sweep: ~10-30x on exact sampling at the sizes people actually
+# use (n=80 at Delta=-3 goes from ~52s to ~6s locally). Output is bit-for-bit
+# identical to the numpy path -- same random values consumed at the same
+# positions -- so this is a speed change, not a numerical one, and the numpy
+# path remains the reference if the import fails.
+#
+# Costs ~139 MB resident (llvmlite dominates). Measured worst case on this
+# app -- numba loaded, JIT warm, exact-sampler cache full -- is 263 MB against
+# the 512 MB free tier, leaving ~249 MB headroom.
+numba>=0.58
