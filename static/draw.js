@@ -100,6 +100,14 @@
   // (red positive, blue negative, white near zero).
   let fluctFrame = null;
 
+  function setFluctAvailable(on) {
+    const opt = document.getElementById("opt-fluct");
+    if (!opt) return;
+    opt.disabled = !on;
+    opt.textContent = on ? "height fluctuations (two samples)"
+                         : "height fluctuations (needs two samples)";
+  }
+
   // Shared by both poll loops. A long job is ~1000 status requests; an
   // isolated bad response must not abandon a computation the server is still
   // running. A proxy timeout returns HTML, so .json() throws rather than
@@ -445,6 +453,14 @@
         }
       }
     } else if (mode === "fluct") {
+      // Selecting this view before any fluctuation field exists used to
+      // dereference null and throw out of draw(). The option is disabled
+      // until one exists, but guard anyway: a stale selection can survive a
+      // reset, and a view mode should never be able to break rendering.
+      if (!fluctFrame) {
+        viewMode.value = "height";
+        return buildOffscreen(frame, "height");
+      }
       const F = fluctFrame;
       let m = 1e-9;
       for (let i = 0; i <= n; i++)
@@ -561,14 +577,21 @@
   }
 
   function drawPaths(frame, scale) {
-    // The six-vertex configuration as non-intersecting lattice paths.
+    // Standard six-vertex path convention (Gorin-Kenyon, arXiv:2408.14446,
+    // Figure 1): paths run along lattice edges through each vertex --
+    //   (1) a1 empty   (2) a2 crossing   (3) b1 vertical
+    //   (4) b2 horizontal   (5) c1 turn   (6) c2 turn
     //
-    // The paths are the level lines of the height function, so this is
-    // marching squares at half-integer levels rather than one segment per
-    // edge -- an earlier attempt drew per-edge segments and they did not
-    // join up. Vectors rather than pixels so it stays crisp under zoom,
-    // which is the point: this is the representation used in the literature
-    // (Figures 17-18 of arXiv:2309.12495).
+    // The four bits already computed for the face type ARE the occupied
+    // edges: l,t,b,r set means the left/top/bottom/right edge carries path.
+    // So drawing a stub from the vertex centre to each set edge reproduces
+    // the figure exactly -- turns for the c types, straight lines for b,
+    // a crossing for a2, nothing for a1.
+    //
+    // (An earlier version drew level lines of the height function. That is a
+    // valid picture of the same configuration but it is the dual one, and it
+    // is not the convention used in the literature or described in this
+    // interface.)
     const n = frame.n;
     ctx.strokeStyle = "#e8e2d8";
     ctx.lineWidth = Math.max(0.05, Math.min(0.16, 10 / n));
@@ -580,24 +603,13 @@
       for (let j = 0; j < n; j++) {
         const tl = frame.get(i, j),     tr = frame.get(i, j + 1);
         const bl = frame.get(i + 1, j), br = frame.get(i + 1, j + 1);
-        const lo = Math.min(tl, tr, bl, br);
-        const hi = Math.max(tl, tr, bl, br);
-        for (let L = lo + 0.5; L < hi; L += 1) {
-          // crossings on the four edges of this face, at their midpoints
-          const pts = [];
-          if ((tl < L) !== (tr < L)) pts.push([j + 0.5, i]);          // top
-          if ((bl < L) !== (br < L)) pts.push([j + 0.5, i + 1]);      // bottom
-          if ((tl < L) !== (bl < L)) pts.push([j, i + 0.5]);          // left
-          if ((tr < L) !== (br < L)) pts.push([j + 1, i + 0.5]);      // right
-          if (pts.length === 2) {
-            ctx.moveTo(pts[0][0], pts[0][1]);
-            ctx.lineTo(pts[1][0], pts[1][1]);
-          } else if (pts.length === 4) {
-            // saddle: join the pairs that keep the two strands apart
-            ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(pts[2][0], pts[2][1]);
-            ctx.moveTo(pts[1][0], pts[1][1]); ctx.lineTo(pts[3][0], pts[3][1]);
-          }
-        }
+        const t = (tr - tl) === 1, b = (br - bl) === 1;
+        const l = (bl - tl) === 1,  r = (br - tr) === 1;
+        const cx = j + 0.5, cy = i + 0.5;
+        if (l) { ctx.moveTo(cx, cy); ctx.lineTo(j, cy); }
+        if (r) { ctx.moveTo(cx, cy); ctx.lineTo(j + 1, cy); }
+        if (t) { ctx.moveTo(cx, cy); ctx.lineTo(cx, i); }
+        if (b) { ctx.moveTo(cx, cy); ctx.lineTo(cx, i + 1); }
       }
     }
     ctx.stroke();
@@ -793,6 +805,12 @@
     // left the user with a fresh chain that the finished job then silently
     // replaced -- they asked to start over and got an exact sample instead.
     bumpParams();
+    // A reset builds a new chain, so any fluctuation field from earlier
+    // samples no longer describes what is on screen. Drop it and leave the
+    // view, otherwise the canvas stays frozen on stale data.
+    fluctFrame = null;
+    setFluctAvailable(false);
+    if (viewMode.value === "fluct") viewMode.value = "height";
     busy = true;
     hudStatus.textContent = "initializing...";
     const n = parseInt(nSlider.value, 10);
@@ -988,6 +1006,7 @@
         for (let j = 0; j <= n; j++)
           diff[i * size + j] = (A.get(i, j) - B.get(i, j)) * inv;
       fluctFrame = { n, get: (i, j) => diff[i * size + j] };
+      setFluctAvailable(true);
       lastFrame = A;
       sampler = null;
       viewMode.value = "fluct";

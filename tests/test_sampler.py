@@ -1637,8 +1637,15 @@ def test_new_export_and_view_modes_exist():
         assert f'id="{btn}"' in html, f"missing control {btn}"
     assert "function drawPaths" in js
     assert "heightsAsText" in js and "typesAsText" in js
-    # paths are level lines, so marching squares -- per-edge segments do not join
-    assert "lo + 0.5" in js, "path view is not drawing level lines"
+    # paths follow the standard convention (Gorin-Kenyon arXiv:2408.14446
+    # Fig. 1): each set bit of (l,t,b,r) is an occupied edge, drawn as a stub
+    # from the vertex centre. An earlier version drew level lines of the
+    # height function -- the dual picture, and not the one the literature or
+    # this interface describes.
+    assert "j + 0.5" in js and "i + 0.5" in js, (
+        "path view does not draw stubs from vertex centres")
+    assert "lo + 0.5" not in js, (
+        "path view still uses marching squares on the height function")
     # the type codes must follow the corrected convention order
     assert "{ a1: 1, a2: 2, b1: 3, b2: 4, c1: 5, c2: 6 }" in js
 
@@ -1788,6 +1795,72 @@ def test_runtime_labelled_buttons_are_stacked():
     before2 = html[:j]
     assert before2.rindex('class="stack"') > before2.rindex('class="row"'), (
         "the text-export buttons are in a row and their labels do not fit")
+
+
+def test_path_convention_matches_gorin_kenyon_figure_1():
+    """The six vertex types must draw as in Gorin-Kenyon arXiv:2408.14446
+    Fig. 1: (1) a1 empty, (2) a2 crossing, (3) b1 vertical, (4) b2
+    horizontal, (5) c1 and (6) c2 turning.
+
+    That falls straight out of the bits already computed for the face type:
+    l,t,b,r set means the left/top/bottom/right edge carries path, so drawing
+    a stub from the vertex centre to each set edge reproduces the figure.
+    """
+    BITS = {"a1": (0, 0, 0, 0), "a2": (1, 1, 1, 1), "b1": (0, 1, 1, 0),
+            "b2": (1, 0, 0, 1), "c1": (1, 1, 0, 0), "c2": (0, 0, 1, 1)}
+    edges = {t: [e for e, on in zip("ltbr", bits) if on]
+             for t, bits in BITS.items()}
+
+    assert edges["a1"] == [],                  "(1) a1 must be empty"
+    assert set(edges["a2"]) == set("ltbr"),    "(2) a2 must be a crossing"
+    assert set(edges["b1"]) == {"t", "b"},     "(3) b1 must be vertical"
+    assert set(edges["b2"]) == {"l", "r"},     "(4) b2 must be horizontal"
+    assert set(edges["c1"]) == {"l", "t"},     "(5) c1 must be a turn"
+    assert set(edges["c2"]) == {"b", "r"},     "(6) c2 must be a turn"
+    # the two c types must turn the opposite way from each other
+    assert not (set(edges["c1"]) & set(edges["c2"])), (
+        "the two c-type turns must not share an edge")
+
+
+def test_fluctuation_view_is_guarded_and_cleared_on_reset():
+    """Two integration bugs reported by a collaborator.
+
+    1) Selecting the fluctuation view before computing one dereferenced a null
+       frame and threw out of draw() -- "Cannot read properties of null
+       (reading 'get')". The option is now disabled until a field exists, and
+       draw() falls back to the height view anyway: a stale selection can
+       survive, and a view mode should never be able to break rendering.
+
+    2) After computing fluctuations, Reset left the canvas stuck on the old
+       fluctuation drawing. A reset builds a new chain, so the field no longer
+       describes what is on screen; it is dropped and the view leaves.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    # the option starts unavailable
+    assert 'id="opt-fluct"' in html and "disabled" in html[
+        html.index('id="opt-fluct"'):html.index('id="opt-fluct"') + 120], (
+        "the fluctuation view option is selectable before a field exists")
+
+    # draw() guards regardless
+    i = code.index('mode === "fluct"')
+    branch = code[i:i + 400]
+    assert "if (!fluctFrame)" in branch, (
+        "the fluctuation branch dereferences the frame without checking it")
+
+    # reset clears the field and leaves the view
+    start = code.index("function localInit")
+    body = code[start:start + 700]
+    assert "fluctFrame = null" in body, "reset does not clear the fluctuation field"
+    assert 'viewMode.value = "height"' in body, (
+        "reset leaves the view stuck on the stale fluctuation drawing")
+    assert "setFluctAvailable(false)" in body, (
+        "reset does not disable the option again")
 
 
 if __name__ == "__main__":
