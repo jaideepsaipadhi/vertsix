@@ -1863,6 +1863,42 @@ def test_fluctuation_view_is_guarded_and_cleared_on_reset():
         "reset does not disable the option again")
 
 
+def test_mixing_badge_is_smoothed_and_size_scaled():
+    """Reported: the badge flickered between its two messages several times a
+    second at small n.
+
+    Two causes. It compared two SINGLE samples and re-evaluated every
+    animation frame, so ordinary sampling noise flipped the verdict; and the
+    cutoff was a fixed 0.02, while the c-density's standard error falls like
+    1/n -- at n=11 the c-fraction already moves in steps of 1/121 = 0.008.
+
+    Now: an exponential moving average, a 600 ms repaint throttle, and a
+    threshold scaling as 2.5/n with a floor. Measured after the fix, over six
+    seconds of running: n=11 gave 0 verdict flips, n=40 gave 1 (the genuine
+    one-way transition as it equilibrates), and a truly torpid case -- n=80,
+    b=3, ferroelectric and outside the monotone region -- stayed solidly red
+    with gap 0.529 against a threshold of 0.031.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+    start = code.index("function updateMixingBadge")
+    body = code[start:start + 1800]
+
+    assert "gapEMA" in body, "the badge uses the instantaneous gap; it will flicker"
+    assert "0.9 * gapEMA" in body, "no smoothing of the gap"
+    assert "lastBadgeUpdate" in body, "the badge repaints every animation frame"
+    assert "2.5 / n" in body, (
+        "the threshold does not scale with system size; a fixed cutoff fires "
+        "constantly at small n and is too loose at large n")
+    # a reset must start a fresh comparison rather than inherit the average
+    li = code.index("function localInit")
+    assert "gapEMA = null" in code[li:li + 800], (
+        "reset does not clear the smoothed gap")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

@@ -809,6 +809,8 @@
     // samples no longer describes what is on screen. Drop it and leave the
     // view, otherwise the canvas stays frozen on stale data.
     fluctFrame = null;
+    gapEMA = null;
+    lastBadgeUpdate = 0;
     setFluctAvailable(false);
     if (viewMode.value === "fluct") viewMode.value = "height";
     busy = true;
@@ -865,24 +867,47 @@
     return cc / (n * n);
   }
 
+  // Smoothed gap and a throttle. Both are needed: the comparison is between
+  // two SINGLE samples, so the instantaneous gap is noisy, and it was being
+  // re-evaluated every animation frame -- at small n the badge flickered
+  // between the two messages several times a second.
+  let gapEMA = null;
+  let lastBadgeUpdate = 0;
+
   function updateMixingBadge() {
     const el = document.getElementById("mixing-badge");
     if (!el || !sampler || !shadow) return;
-    // only meaningful once both chains have had some time
     if (totalSweeps < 200) { el.style.display = "none"; return; }
+
     const gap = Math.abs(cFraction(sampler) - cFraction(shadow));
+    // exponential moving average: one sample of the gap says little
+    gapEMA = gapEMA === null ? gap : 0.9 * gapEMA + 0.1 * gap;
+
+    const now = Date.now();
+    if (now - lastBadgeUpdate < 600) return;      // do not repaint every frame
+    lastBadgeUpdate = now;
+
+    // The gap between two independent samples fluctuates on the scale of the
+    // c-density's own standard error, which falls like 1/n. A fixed cutoff
+    // therefore fires constantly at small n (at n=11 the c-fraction moves in
+    // steps of 1/121, already 0.008) and is too loose at large n. Scale it,
+    // with a floor so it never becomes hair-trigger.
+    const n = sampler.n;
+    const tol = Math.max(0.02, 2.5 / n);
+
     el.style.display = "block";
-    if (gap > 0.02) {
+    if (gapEMA > tol) {
       el.textContent =
         `NOT EQUILIBRATED - a second chain started from the opposite corner ` +
-        `disagrees by ${gap.toFixed(3)} in c-vertex density. What is on ` +
-        `screen is not yet a sample from the measure; it is where this ` +
-        `particular run happens to be stuck.`;
+        `disagrees by ${gapEMA.toFixed(3)} in c-vertex density (averaged; ` +
+        `threshold ${tol.toFixed(3)} at this size). What is on screen is not ` +
+        `yet a sample from the measure; it is where this particular run ` +
+        `happens to be stuck.`;
       el.style.color = "#ffb3b3";
       el.style.borderLeft = "3px solid #b03a3a";
     } else {
       el.textContent =
-        `two chains from opposite starts agree to ${gap.toFixed(3)} - ` +
+        `two chains from opposite starts agree to ${gapEMA.toFixed(3)} - ` +
         `consistent with equilibrium (necessary, not sufficient)`;
       el.style.color = "#8a7c6c";
       el.style.borderLeft = "3px solid #3a5a3a";
