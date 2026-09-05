@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
-<link rel="stylesheet" href="style.css?v=33" />
+<link rel="stylesheet" href="style.css?v=34" />
 </head>
 <body>
   <noscript>
@@ -137,9 +137,9 @@
             <button id="btn-step">step</button>
           </div>
 
-          <div class="row">
+          <div class="stack">
             <button id="btn-exact" class="exact">exact sample</button>
-            <button id="btn-fluct" class="exact" title="Draw two independent exact samples, subtract their height functions and divide by sqrt(2). That normalisation preserves the variance of a single height function, so what you see is the fluctuation field.">fluct.</button>
+            <button id="btn-fluct" class="exact" title="Draw two independent exact samples, subtract their height functions and divide by sqrt(2). That normalisation preserves the variance of a single height function, so what you see is the fluctuation field.">height fluctuations</button>
           </div>
           <div class="field">
             <label for="seed">seed <span class="hint">(blank = random)</span></label>
@@ -229,9 +229,9 @@
             <button id="btn-save" title="Screenshot of the current view, including zoom and pan. Double-click the canvas to reset the view first if you want the whole lattice.">save PNG</button>
             <button id="btn-save-svg" title="The complete configuration as vector graphics, regardless of zoom or pan. Use this for figures.">save SVG</button>
           </div>
-          <div class="row" style="margin-top:0.4em;">
-            <button id="btn-save-heights" title="The height function as an (N+1)x(N+1) table of integers, tab separated. Loads with numpy.loadtxt.">heights .txt</button>
-            <button id="btn-save-types" title="Vertex types as an NxN table, 1..6 = a1,a2,b1,b2,c1,c2, tab separated. Loads with numpy.loadtxt.">types .txt</button>
+          <div class="stack" style="margin-top:0.4em;">
+            <button id="btn-save-heights" title="The height function as an (N+1)x(N+1) table of integers, tab separated. Loads with numpy.loadtxt.">save heights (.txt)</button>
+            <button id="btn-save-types" title="Vertex types as an NxN table, 1..6 = a1,a2,b1,b2,c1,c2, tab separated. Loads with numpy.loadtxt.">save types (.txt)</button>
           </div>
         </div>
 

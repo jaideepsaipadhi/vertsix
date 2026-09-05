@@ -1758,6 +1758,38 @@ def test_ui_text_states_the_corrected_region():
         "the UI does not state the actual CFTP condition")
 
 
+def test_runtime_labelled_buttons_are_stacked():
+    """Buttons whose label changes at runtime cannot share a row.
+
+    "exact sample" becomes "coalescing... (18s)" while a job runs, which is
+    far wider, so side by side it overran its neighbour and both labels were
+    clipped. The same applied to the two text-export buttons. They are now
+    full-width, one per line.
+
+    Note the earlier overflow check missed this: it compared each control
+    against the panel edge, so controls overlapping EACH OTHER passed. The
+    check that found it compares siblings.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    css = open(os.path.join(here, "..", "static", "style.css")).read()
+
+    assert ".stack" in css, "no stacked-button layout defined"
+    block = css[css.index(".stack"):]
+    assert "flex-direction: column" in block[:200], ".stack is not a column"
+
+    # the runtime-labelled buttons must live in a stack, not a row
+    i = html.index('id="btn-exact"')
+    before = html[:i]
+    assert before.rindex('class="stack"') > before.rindex('class="row"'), (
+        "btn-exact is in a row; its label changes at runtime and will overrun")
+    j = html.index('id="btn-save-heights"')
+    before2 = html[:j]
+    assert before2.rindex('class="stack"') > before2.rindex('class="row"'), (
+        "the text-export buttons are in a row and their labels do not fit")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

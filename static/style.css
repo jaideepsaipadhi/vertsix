@@ -326,7 +326,21 @@ main {
 .row {
   display: flex;
   gap: 0.4em;
-  flex-wrap: wrap;          /* four export buttons will not fit on one line */
+  flex-wrap: wrap;
+}
+
+/* Full-width buttons, one per line.
+   Used where a label changes at runtime -- "exact sample" becomes
+   "coalescing... (18s)" while a job runs -- so the button cannot share a row
+   without overrunning its neighbour. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+.stack button {
+  width: 100%;
+  flex: none;
 }
 
 /* Text inputs (the seed box) should read like the rest of the panel rather
