@@ -326,6 +326,44 @@ main {
 .row {
   display: flex;
   gap: 0.4em;
+  flex-wrap: wrap;          /* four export buttons will not fit on one line */
+}
+
+/* Text inputs (the seed box) should read like the rest of the panel rather
+   than like a default browser control. */
+.field input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  background: #17120e;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0.35em 0.5em;
+  font-family: inherit;
+  font-size: 0.9em;
+}
+.field input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.field input[type="text"]::placeholder {
+  color: #6b5f52;
+}
+
+/* A secondary note inside a label, e.g. "(blank = random)". */
+.hint {
+  color: #8a7c6c;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Wrapping rows need a minimum or labels get crushed onto three lines, but
+   the panel is only ~205px wide, so keep it small enough that three short
+   buttons still share one line. */
+.row button {
+  min-width: 4em;
+  white-space: nowrap;
 }
 
 button {

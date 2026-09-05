@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
-<link rel="stylesheet" href="style.css?v=31" />
+<link rel="stylesheet" href="style.css?v=33" />
 </head>
 <body>
   <noscript>
@@ -139,20 +139,21 @@
 
           <div class="row">
             <button id="btn-exact" class="exact">exact sample</button>
-            <div class="field" style="margin-top:0.5em;">
-              <label for="seed">seed (blank = random)</label>
-              <input type="text" id="seed" placeholder="e.g. 12345"
-                     style="width:100%;box-sizing:border-box;"
-                     title="Fixing the seed makes an exact sample reproducible: the same seed, n and weights give the same configuration." />
-            </div>
-            <button id="btn-fluct" class="exact" title="Draw two independent exact samples, subtract their height functions and divide by sqrt(2). That normalisation preserves the variance of a single height function, so what you see is the fluctuation field.">height fluctuations</button>
+            <button id="btn-fluct" class="exact" title="Draw two independent exact samples, subtract their height functions and divide by sqrt(2). That normalisation preserves the variance of a single height function, so what you see is the fluctuation field.">fluct.</button>
+          </div>
+          <div class="field">
+            <label for="seed">seed <span class="hint">(blank = random)</span></label>
+            <input type="text" id="seed" placeholder="e.g. 12345"
+                   title="Fixing the seed makes a sample reproducible: the same seed, n and weights give the same configuration." />
           </div>
           <p class="note" id="mixing-badge" style="display:none;padding-left:0.6em;"></p>
           <p class="note" id="slow-exact-note" style="display:none;color:#e8a05c;"></p>
           <p class="note" id="exact-gate-note">
-            Exact sampling is proven mathematically valid only at a=b=1
-            (c<sub>1</sub>, c<sub>2</sub> free). Set the a/b sliders back to 1.00 to
-            re-enable it.
+            Exact sampling by CFTP needs c<sub>1</sub>c<sub>2</sub> &ge;
+            a<sub>1</sub>a<sub>2</sub> and c<sub>1</sub>c<sub>2</sub> &ge;
+            b<sub>1</sub>b<sub>2</sub>. Outside that region no monotone
+            coupling of the update exists, so no CFTP scheme is valid there.
+            Raise the c weights, or lower a and b, to re-enable it.
           </p>
         </div>
 
@@ -226,9 +227,11 @@
           <div class="section-title">export</div>
           <div class="row">
             <button id="btn-save" title="Screenshot of the current view, including zoom and pan. Double-click the canvas to reset the view first if you want the whole lattice.">save PNG</button>
-            <button id="btn-save-heights" title="The height function as an (N+1)x(N+1) table of integers, tab separated.">save heights (txt)</button>
-            <button id="btn-save-types" title="Vertex types as an NxN table, 1..6 = a1,a2,b1,b2,c1,c2, tab separated.">save types (txt)</button>
             <button id="btn-save-svg" title="The complete configuration as vector graphics, regardless of zoom or pan. Use this for figures.">save SVG</button>
+          </div>
+          <div class="row" style="margin-top:0.4em;">
+            <button id="btn-save-heights" title="The height function as an (N+1)x(N+1) table of integers, tab separated. Loads with numpy.loadtxt.">heights .txt</button>
+            <button id="btn-save-types" title="Vertex types as an NxN table, 1..6 = a1,a2,b1,b2,c1,c2, tab separated. Loads with numpy.loadtxt.">types .txt</button>
           </div>
         </div>
 
@@ -241,9 +244,13 @@
           a<sub>1</sub>=a<sub>2</sub>=1 fixed (WLOG by gauge freedom -- the
           model only depends on 2 independent ratios). &Delta;&gt;1:
           ferroelectric. &minus;1&le;&Delta;&lt;1: disordered. &Delta;&lt;&minus;1:
-          antiferroelectric. <strong>Exact sample</strong> uses Coupling From
-          The Past for a mathematically exact draw (n&le;250), valid only in
-          the a=b=1 regime.
+          antiferroelectric. <strong>Exact sample</strong> is a mathematically
+          exact draw: the sequential transfer-matrix sampler for
+          n&nbsp;&le;&nbsp;14 at any weights, and Coupling From The Past
+          (n&nbsp;&le;&nbsp;250) wherever c<sub>1</sub>c<sub>2</sub> dominates
+          a<sub>1</sub>a<sub>2</sub> and b<sub>1</sub>b<sub>2</sub>. That
+          region contains the whole antiferroelectric phase &Delta;&lt;&minus;1,
+          so &Delta;=&minus;3 is exactly samplable.
         </p>
       </div>
     </main>

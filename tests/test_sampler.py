@@ -1199,7 +1199,9 @@ def test_arctic_circle_appears_in_an_exact_sample():
     s = SixVertexSampler(n=n, a1=1, a2=1, b1=1, b2=1, c_up=1, c_down=1)
     # Assign through the same branch server.py uses. Writing s.H directly
     # with a numpy array breaks when torch is installed: height_array() then
-    # calls .detach() on it. Only reproducible on machines that have torch.
+    # calls .detach() on it. Only reproducible on machines that have torch --
+    # this sandbox has none, so the suite passes here either way and the bug
+    # only shows on the collaborator's machine. Keep this branch.
     if s.use_torch:
         import torch
         s.H = torch.from_numpy(np.asarray(H, dtype=np.float32)).to(s.device)
@@ -1739,6 +1741,21 @@ def test_model_switch_disables_rather_than_hides_and_restores_the_chain():
     assert "el.title =" in body, "disabled controls give no reason"
     assert "if (!sampler) localInit();" in body, (
         "switching back to DWBC does not rebuild the chain; Run will be dead")
+
+
+def test_ui_text_states_the_corrected_region():
+    """The panel still claimed exact sampling was "valid only at a=b=1", which
+    was the pre-correction description. With the labels fixed the region is
+    c-dominant and contains the whole antiferroelectric phase, so Delta=-3 --
+    the case a collaborator kept reporting -- is exactly samplable."""
+    import os
+    here = os.path.dirname(__file__)
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    assert "a=b=1 regime" not in html, "stale gating claim still in the UI"
+    assert "valid only at a=b=1" not in html, "stale gating claim still in the UI"
+    # and the correct condition is stated somewhere the user can see
+    assert "c<sub>1</sub>c<sub>2</sub> &ge;" in html, (
+        "the UI does not state the actual CFTP condition")
 
 
 if __name__ == "__main__":
