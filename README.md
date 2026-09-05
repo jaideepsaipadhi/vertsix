@@ -299,6 +299,15 @@ Rejects with `400` if `session_id` is missing/expired, or if
 synchronously on a single worker, so an unbounded request would stall the
 whole server. The error names a sweep count that will work.
 
+**`POST /api/stochastic`** — the stochastic six-vertex model with step
+initial condition and free exit. Body: `n`, `b1`, `b2`, optional `seed`.
+Synchronous, because the vertex weights are conditional probabilities and a
+configuration is generated in one sweep: exact, `O(n^2)`, no Markov chain
+(`n=300` in about 40 ms). `b1` and `b2` must lie strictly in `(0,1)` -- they
+are probabilities, not Boltzmann weights, and out-of-range values are refused.
+Its anisotropy is `(b1+b2)/(2 sqrt(b1 b2)) >= 1` by AM-GM, so this covers the
+ferroelectric regime, which is the hardest one under DWBC.
+
 **`POST /api/exact/start`** — begin exact sampling; returns `job_id`
 immediately. Long computations must not sit on an open HTTP request.
 Returns `429` if `_MAX_CONCURRENT_JOBS` are already running.
@@ -307,6 +316,13 @@ Returns `429` if `_MAX_CONCURRENT_JOBS` are already running.
 `running` | `done` | `error`. On `done` the body carries `frame` and `info`
 (`info.method` is `exact-sequential` or `cftp`). Jobs stuck in `running`
 past a watchdog threshold are reaped and reported as `error`.
+
+### Reproducibility
+
+Every sampling endpoint accepts an optional integer `seed`. Fixing it makes a
+sample reproducible: the same seed, `n` and weights give the same
+configuration, which is what lets someone else regenerate a figure. The UI has
+a seed box; leaving it blank draws a random one.
 
 ### Out-of-range values are rejected, not clamped
 

@@ -90,6 +90,8 @@
               <option value="height">height field (smoothed)</option>
               <option value="active">liquid / frozen (arctic boundary)</option>
               <option value="vertex6">6 vertex types (colored)</option>
+              <option value="paths">lattice paths</option>
+              <option value="fluct">height fluctuations (two samples)</option>
             </select>
           </div>
           <div id="vertex6-legend" style="display:none;font-family:var(--mono);font-size:0.78em;line-height:2.1;margin-top:0.4em;">
@@ -105,6 +107,30 @@
 
         <div class="section">
           <div class="section-title">sampling</div>
+          <div class="field">
+            <label for="model">model</label>
+            <select id="model">
+              <option value="dwbc">six-vertex, domain wall (DWBC)</option>
+              <option value="stochastic">stochastic six-vertex, free exit</option>
+            </select>
+          </div>
+          <p class="note" id="stochastic-note" style="display:none;">
+            Vertex weights are conditional probabilities, so a configuration is
+            generated in one sweep: exact, O(N&sup2;), no Markov chain and no
+            mixing time. &Delta; = (b&#8321;+b&#8322;)/(2&radic;(b&#8321;b&#8322;))
+            &ge; 1 by AM&ndash;GM, so this covers the ferroelectric regime,
+            which is the hardest one under DWBC.
+          </p>
+          <div class="field" id="stoch-params" style="display:none;">
+            <label for="sb1">b&#8321; (turn probability)</label>
+            <input type="range" id="sb1" min="0.02" max="0.98" step="0.02" value="0.30" />
+            <output id="sb1-out">0.30</output>
+            <label for="sb2">b&#8322;</label>
+            <input type="range" id="sb2" min="0.02" max="0.98" step="0.02" value="0.70" />
+            <output id="sb2-out">0.70</output>
+            <output id="stoch-delta" style="display:block;margin-top:0.4em;"></output>
+            <button id="btn-stoch" class="exact" style="margin-top:0.5em;">sample (exact)</button>
+          </div>
           <div class="row">
             <button id="btn-init">reset</button>
             <button id="btn-play" class="primary">run</button>
@@ -113,6 +139,13 @@
 
           <div class="row">
             <button id="btn-exact" class="exact">exact sample</button>
+            <div class="field" style="margin-top:0.5em;">
+              <label for="seed">seed (blank = random)</label>
+              <input type="text" id="seed" placeholder="e.g. 12345"
+                     style="width:100%;box-sizing:border-box;"
+                     title="Fixing the seed makes an exact sample reproducible: the same seed, n and weights give the same configuration." />
+            </div>
+            <button id="btn-fluct" class="exact" title="Draw two independent exact samples, subtract their height functions and divide by sqrt(2). That normalisation preserves the variance of a single height function, so what you see is the fluctuation field.">height fluctuations</button>
           </div>
           <p class="note" id="mixing-badge" style="display:none;padding-left:0.6em;"></p>
           <p class="note" id="slow-exact-note" style="display:none;color:#e8a05c;"></p>
@@ -193,6 +226,8 @@
           <div class="section-title">export</div>
           <div class="row">
             <button id="btn-save" title="Screenshot of the current view, including zoom and pan. Double-click the canvas to reset the view first if you want the whole lattice.">save PNG</button>
+            <button id="btn-save-heights" title="The height function as an (N+1)x(N+1) table of integers, tab separated.">save heights (txt)</button>
+            <button id="btn-save-types" title="Vertex types as an NxN table, 1..6 = a1,a2,b1,b2,c1,c2, tab separated.">save types (txt)</button>
             <button id="btn-save-svg" title="The complete configuration as vector graphics, regardless of zoom or pan. Use this for figures.">save SVG</button>
           </div>
         </div>
@@ -243,6 +278,6 @@
   });
 </script>
 <script src="sixvertex.js?v=1"></script>
-<script src="draw.js?v=35"></script>
+<script src="draw.js?v=41"></script>
 </body>
 </html>

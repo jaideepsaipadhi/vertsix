@@ -80,15 +80,20 @@ def sample(n, b1, b2, seed=None, initial="step"):
 
 
 def height_function(h, v):
-    """Height function of a configuration, for plotting.
+    """Height function of a configuration.
 
-    H(i, j) counts the paths passing weakly below-left of the point, which is
-    the standard height for this model.
+    H(i, j) counts the horizontal arrows crossing column j in rows above i.
+    Vertically H(i+1,j) - H(i,j) = h[i,j], which is 0 or 1; horizontally the
+    sum telescopes through arrow conservation at each vertex to
+    v[0,j] - v[i,j], again 0 or +-1. So this is a genuine height function.
+
+    (An earlier version of this routine used a double cumulative sum and was
+    simply wrong -- it produced steps of 8 rather than 1. It was never used by
+    anything, which is precisely why the error survived.)
     """
     n = v.shape[1]
-    H = np.zeros((n + 1, n + 1), dtype=np.int32)
-    # cumulative count of vertical arrows crossing each row boundary
-    H[1:, 1:] = np.cumsum(v[1:n + 1, :], axis=1).cumsum(axis=0)[:, :]
+    H = np.zeros((n + 1, n + 1), dtype=np.int64)
+    H[1:, :] = np.cumsum(h[:, :n + 1], axis=0)
     return H
 
 

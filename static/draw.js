@@ -93,6 +93,19 @@
   // size threshold would be the wrong warning.
   let shadow = null;
 
+  // Height-function fluctuations: two independent exact samples, differenced
+  // and divided by sqrt(2). That normalisation preserves the variance of a
+  // single height function, so the field shown has the same scale as the
+  // fluctuation of one sample about its mean. Rendered on a diverging scale
+  // (red positive, blue negative, white near zero).
+  let fluctFrame = null;
+
+  // Shared by both poll loops. A long job is ~1000 status requests; an
+  // isolated bad response must not abandon a computation the server is still
+  // running. A proxy timeout returns HTML, so .json() throws rather than
+  // returning {ok:false}.
+  const MAX_CONSECUTIVE_FAILURES = 15;
+
   let sampler = null;
   let lastFrame = null;
   let playing = false;
@@ -115,6 +128,15 @@
   }
   function rgbToHex([r, g, b]) {
     return "#" + [r, g, b].map(x => x.toString(16).padStart(2, "0")).join("");
+  }
+
+  function currentSeed() {
+    const el = document.getElementById("seed");
+    if (!el) return null;
+    const v = el.value.trim();
+    if (v === "") return null;
+    const k = parseInt(v, 10);
+    return Number.isFinite(k) ? k : null;
   }
 
   function currentWeights() {
@@ -348,10 +370,14 @@
     const t = top === 1, b = bottom === 1, l = left === 1, r = right === 1;
     if (!l && !t && !b && !r) return "a1";
     if (l && t && b && r) return "a2";
-    if (l && t && !b && !r) return "b1";
-    if (!l && !t && b && r) return "b2";
-    if (!l && t && b && !r) return "c1";
-    if (l && !t && !b && r) return "c2";
+    // Standard convention: (l,t) is a c-type, (t,b) is a b-type. This
+    // classifier was missed when the labels were corrected elsewhere, so the
+    // colour pickers for b1/b2 were in fact colouring c1/c2. Diagnostic: in a
+    // large simulation the frozen corners must be a- and b-types.
+    if (l && t && !b && !r) return "c1";
+    if (!l && !t && b && r) return "c2";
+    if (!l && t && b && !r) return "b1";
+    if (l && !t && !b && r) return "b2";
     return "a1";
   }
 
@@ -415,6 +441,34 @@
           } else {
             img.data[idx] = 20; img.data[idx + 1] = 30; img.data[idx + 2] = 42;
           }
+          img.data[idx + 3] = 255;
+        }
+      }
+    } else if (mode === "fluct") {
+      const F = fluctFrame;
+      let m = 1e-9;
+      for (let i = 0; i <= n; i++)
+        for (let j = 0; j <= n; j++) m = Math.max(m, Math.abs(F.get(i, j)));
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          const v = (F.get(i, j) + F.get(i + 1, j) +
+                     F.get(i, j + 1) + F.get(i + 1, j + 1)) / 4 / m;
+          // white at zero, red for positive, blue for negative
+          const t = Math.max(-1, Math.min(1, v));
+          let r, g, b;
+          if (t >= 0) { r = 255; g = Math.round(255 * (1 - t)); b = g; }
+          else        { b = 255; r = Math.round(255 * (1 + t)); g = r; }
+          const idx = (i * n + j) * 4;
+          img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = b;
+          img.data[idx + 3] = 255;
+        }
+      }
+    } else if (mode === "paths") {
+      // Filled by drawPaths() after the blit; nothing per-pixel here.
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          const idx = (i * n + j) * 4;
+          img.data[idx] = 12; img.data[idx + 1] = 14; img.data[idx + 2] = 18;
           img.data[idx + 3] = 255;
         }
       }
@@ -506,6 +560,86 @@
     ctx.restore();
   }
 
+  function drawPaths(frame, scale) {
+    // The six-vertex configuration as non-intersecting lattice paths.
+    //
+    // The paths are the level lines of the height function, so this is
+    // marching squares at half-integer levels rather than one segment per
+    // edge -- an earlier attempt drew per-edge segments and they did not
+    // join up. Vectors rather than pixels so it stays crisp under zoom,
+    // which is the point: this is the representation used in the literature
+    // (Figures 17-18 of arXiv:2309.12495).
+    const n = frame.n;
+    ctx.strokeStyle = "#e8e2d8";
+    ctx.lineWidth = Math.max(0.05, Math.min(0.16, 10 / n));
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const tl = frame.get(i, j),     tr = frame.get(i, j + 1);
+        const bl = frame.get(i + 1, j), br = frame.get(i + 1, j + 1);
+        const lo = Math.min(tl, tr, bl, br);
+        const hi = Math.max(tl, tr, bl, br);
+        for (let L = lo + 0.5; L < hi; L += 1) {
+          // crossings on the four edges of this face, at their midpoints
+          const pts = [];
+          if ((tl < L) !== (tr < L)) pts.push([j + 0.5, i]);          // top
+          if ((bl < L) !== (br < L)) pts.push([j + 0.5, i + 1]);      // bottom
+          if ((tl < L) !== (bl < L)) pts.push([j, i + 0.5]);          // left
+          if ((tr < L) !== (br < L)) pts.push([j + 1, i + 0.5]);      // right
+          if (pts.length === 2) {
+            ctx.moveTo(pts[0][0], pts[0][1]);
+            ctx.lineTo(pts[1][0], pts[1][1]);
+          } else if (pts.length === 4) {
+            // saddle: join the pairs that keep the two strands apart
+            ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(pts[2][0], pts[2][1]);
+            ctx.moveTo(pts[1][0], pts[1][1]); ctx.lineTo(pts[3][0], pts[3][1]);
+          }
+        }
+      }
+    }
+    ctx.stroke();
+  }
+
+  function downloadText(name, text) {
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  }
+
+  function heightsAsText(frame) {
+    // (N+1)x(N+1) integer table, tab separated -- loads with numpy.loadtxt
+    const n = frame.n, rows = [];
+    for (let i = 0; i <= n; i++) {
+      const row = [];
+      for (let j = 0; j <= n; j++) row.push(frame.get(i, j));
+      rows.push(row.join("\t"));
+    }
+    return rows.join("\n") + "\n";
+  }
+
+  const TYPE_CODE = { a1: 1, a2: 2, b1: 3, b2: 4, c1: 5, c2: 6 };
+
+  function typesAsText(frame) {
+    // NxN table of 1..6 = a1,a2,b1,b2,c1,c2
+    const n = frame.n, rows = [];
+    for (let i = 0; i < n; i++) {
+      const row = [];
+      for (let j = 0; j < n; j++) {
+        row.push(TYPE_CODE[classifyFaceLocal(
+          frame.get(i, j), frame.get(i, j + 1),
+          frame.get(i + 1, j), frame.get(i + 1, j + 1))]);
+      }
+      rows.push(row.join("\t"));
+    }
+    return rows.join("\n") + "\n";
+  }
+
   function draw() {
     if (!lastFrame) return;
     try {
@@ -519,6 +653,7 @@
       const s = dpr * camera.scale;
       ctx.setTransform(s, 0, 0, s, -camera.x * s, -camera.y * s);
       ctx.drawImage(off, 0, 0, n, n);
+      if (viewMode.value === "paths") drawPaths(lastFrame, s);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     } catch (err) {
       dlog(`DRAW ERROR: ${err.message}`);
@@ -755,6 +890,17 @@
     requestAnimationFrame(loop);
   }
 
+  const btnSaveHeights = document.getElementById("btn-save-heights");
+  if (btnSaveHeights) btnSaveHeights.addEventListener("click", () => {
+    if (!lastFrame) return;
+    downloadText(`vertsix_heights_n${lastFrame.n}.txt`, heightsAsText(lastFrame));
+  });
+  const btnSaveTypes = document.getElementById("btn-save-types");
+  if (btnSaveTypes) btnSaveTypes.addEventListener("click", () => {
+    if (!lastFrame) return;
+    downloadText(`vertsix_types_n${lastFrame.n}.txt`, typesAsText(lastFrame));
+  });
+
   btnInit.addEventListener("click", () => {
     playing = false;
     btnPlay.classList.remove("active");
@@ -771,6 +917,183 @@
 
   btnStep.addEventListener("click", () => {
     if (!playing) localStep();
+  });
+
+  async function fetchExactSample(n, w) {
+    // One exact sample from the server, with the same poll-failure tolerance
+    // as the main handler: a long job is many requests and an isolated bad
+    // response must not abandon a computation the server is still running.
+    const startRes = await fetch("/api/exact/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        n, a1: w.a1, a2: w.a2, b1: w.b1, b2: w.b2,
+        c_up: w.c1, c_down: w.c2, seed: currentSeed() }),
+    });
+    const startData = await startRes.json();
+    if (!startData.ok) throw new Error(startData.error || "failed to start");
+    const jobId = startData.job_id;
+
+    let waited = 0, fails = 0;
+    while (waited < 45 * 60) {
+      const interval = waited < 30 ? 1000 : waited < 120 ? 2000 : 5000;
+      await new Promise(r => setTimeout(r, interval));
+      waited += interval / 1000;
+      let st;
+      try {
+        st = await (await fetch(`/api/exact/status/${jobId}`)).json();
+        fails = 0;
+      } catch (e) {
+        // a proxy hiccup must not abandon a job the server is still running
+        if (++fails >= MAX_CONSECUTIVE_FAILURES)
+          throw new Error("lost contact with the server");
+        continue;
+      }
+      if (!st.ok) throw new Error(st.error || "status check failed");
+      if (st.status === "error") throw new Error(st.error || "sampling failed");
+      if (st.status === "done") return frameFromServerData(st.frame);
+    }
+    throw new Error("gave up waiting for the server");
+  }
+
+  const btnFluct = document.getElementById("btn-fluct");
+  if (btnFluct) btnFluct.addEventListener("click", async () => {
+    if (exactInFlight) return;
+    const w = currentWeights();
+    const n = parseInt(nSlider.value, 10);
+    if (!isExactSafe(w, n)) return;
+    exactInFlight = true;
+    playing = false;
+    btnPlay.classList.remove("active");
+    btnPlay.textContent = "run";
+    busy = true;
+    btnExact.disabled = true; btnFluct.disabled = true;
+    const requestedGen = paramGen;
+    hudStatus.textContent = "sampling two copies (server)...";
+    exactInfo.textContent = "drawing the first of two independent samples...";
+    try {
+      const A = await fetchExactSample(n, w);
+      exactInfo.textContent = "drawing the second of two independent samples...";
+      const B = await fetchExactSample(n, w);
+      if (paramGen !== requestedGen) {
+        exactInfo.textContent =
+          "discarded: the chain was reset or its parameters changed";
+        return;
+      }
+      // (H_A - H_B)/sqrt(2) -- preserves the variance of a single height
+      const inv = 1 / Math.SQRT2;
+      const size = n + 1;
+      const diff = new Float64Array(size * size);
+      for (let i = 0; i <= n; i++)
+        for (let j = 0; j <= n; j++)
+          diff[i * size + j] = (A.get(i, j) - B.get(i, j)) * inv;
+      fluctFrame = { n, get: (i, j) => diff[i * size + j] };
+      lastFrame = A;
+      sampler = null;
+      viewMode.value = "fluct";
+      const legend = document.getElementById("vertex6-legend");
+      if (legend) legend.style.display = "none";
+      fitCamera();
+      draw();
+      let mx = 0;
+      for (let k = 0; k < diff.length; k++) mx = Math.max(mx, Math.abs(diff[k]));
+      exactInfo.textContent =
+        `height fluctuations: (H1 - H2)/sqrt(2) from two independent exact ` +
+        `samples; range +/-${mx.toFixed(2)}`;
+      hudStatus.textContent = "fluctuations";
+    } catch (err) {
+      exactInfo.textContent = `fluctuation sampling failed: ${err.message}`;
+      hudStatus.textContent = "ready";
+    } finally {
+      exactInFlight = false;
+      busy = false;
+      btnFluct.disabled = false;
+      updateDeltaDisplay();
+    }
+  });
+
+  const modelSel = document.getElementById("model");
+  const stochParams = document.getElementById("stoch-params");
+  const stochNote = document.getElementById("stochastic-note");
+  const sb1 = document.getElementById("sb1"), sb2 = document.getElementById("sb2");
+
+  function updateModelUI() {
+    if (!modelSel) return;
+    const stoch = modelSel.value === "stochastic";
+    if (stochParams) stochParams.style.display = stoch ? "block" : "none";
+    if (stochNote) stochNote.style.display = stoch ? "block" : "none";
+    // The DWBC controls drive a different model with different boundary
+    // conditions. Disable rather than hide them: leaving them clickable would
+    // invite a silent mismatch, but hiding them makes the tool look like it
+    // lost features. Disabled with a reason is the honest middle.
+    for (const id of ["btn-play", "btn-step", "btn-exact", "btn-fluct"]) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.style.display = "";
+      if (stoch) {
+        el.disabled = true;
+        el.title = "This control drives the DWBC model. The stochastic model " +
+                   "has free-exit boundary conditions and is sampled in one " +
+                   "sweep, so there is no chain to run and no separate exact " +
+                   "step. Switch the model selector back to use it.";
+      } else {
+        el.title = "";
+        if (id !== "btn-exact" && id !== "btn-fluct") el.disabled = false;
+      }
+    }
+    if (!stoch) {
+      // A stochastic sample clears the live chain (different model, different
+      // boundary conditions), so switching back must rebuild it -- otherwise
+      // Run is silently dead, exactly as it was after an exact sample once.
+      if (!sampler) localInit();
+      updateDeltaDisplay();
+    }
+    if (stoch && sb1 && sb2) {
+      const b1 = parseFloat(sb1.value), b2 = parseFloat(sb2.value);
+      const d = (b1 + b2) / (2 * Math.sqrt(b1 * b2));
+      document.getElementById("sb1-out").textContent = b1.toFixed(2);
+      document.getElementById("sb2-out").textContent = b2.toFixed(2);
+      document.getElementById("stoch-delta").textContent =
+        `\u0394 = ${d.toFixed(3)}  (ferroelectric)`;
+    }
+  }
+  if (modelSel) modelSel.addEventListener("change", updateModelUI);
+  if (sb1) sb1.addEventListener("input", updateModelUI);
+  if (sb2) sb2.addEventListener("input", updateModelUI);
+  updateModelUI();
+
+  const btnStoch = document.getElementById("btn-stoch");
+  if (btnStoch) btnStoch.addEventListener("click", async () => {
+    if (busy) return;
+    busy = true; btnStoch.disabled = true;
+    hudStatus.textContent = "sampling (stochastic)...";
+    try {
+      const res = await fetch("/api/stochastic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          n: parseInt(nSlider.value, 10),
+          b1: parseFloat(sb1.value), b2: parseFloat(sb2.value),
+          seed: currentSeed() }),
+      });
+      const data = await res.json();
+      if (!data.ok) { exactInfo.textContent = data.error; return; }
+      lastFrame = frameFromServerData(data.frame);
+      sampler = null;
+      fitCamera(); draw();
+      const inf = data.info;
+      exactInfo.textContent =
+        `exact stochastic sample (one sweep, no Markov chain) - ` +
+        `b1=${inf.b1}, b2=${inf.b2}, \u0394=${inf.delta.toFixed(3)}` +
+        (inf.seed !== null && inf.seed !== undefined ? `, seed ${inf.seed}` : "");
+      hudStatus.textContent = "stochastic sample";
+      hudDevice.textContent = "server (sequential, exact)";
+    } catch (err) {
+      exactInfo.textContent = `stochastic sampling failed: ${err.message}`;
+      hudStatus.textContent = "ready";
+    } finally {
+      busy = false; btnStoch.disabled = false;
+    }
   });
 
   btnExact.addEventListener("click", async () => {
@@ -831,7 +1154,6 @@
       //
       // So: tolerate isolated failures, and back the interval off as the job
       // ages so a long run does not hammer the server it is waiting on.
-      const MAX_CONSECUTIVE_FAILURES = 15;
       while (!finished) {
         const interval = elapsedPolling < 30 ? 1000
                        : elapsedPolling < 120 ? 2000 : 5000;

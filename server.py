@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, send_from_directory
+import base64
 import math
 from collections import OrderedDict
 import os
@@ -13,6 +14,7 @@ from sixvertex.cftp import cftp_sample
 from sixvertex.cftp_exact import (cftp_sample as cftp_exact_sample,
                                   in_monotone_region)
 from sixvertex.exact import exact_sample, MAX_EXACT_N
+from sixvertex import stochastic as _stochastic
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -243,6 +245,60 @@ def _parse_request(data, n_min=4, n_max=400, n_default=40):
                 f"distribution is undefined otherwise), got {v}"
             )
     return n, weights, data.get("seed")
+
+
+@app.route("/api/stochastic", methods=["POST"])
+def api_stochastic():
+    """Stochastic six-vertex model, step initial condition, free exit.
+
+    Synchronous rather than a background job: the weights are conditional
+    probabilities, so one sweep of the lattice gives an exact sample in
+    O(n^2) with no Markov chain -- n=300 takes about 0.05 s. Queueing it
+    would cost more than running it.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        n = int(data.get("n", 64))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "n must be an integer"}), 400
+    if not 4 <= n <= 400:
+        return jsonify({"ok": False, "error": "n must be between 4 and 400"}), 400
+    try:
+        b1 = float(data.get("b1", 0.3))
+        b2 = float(data.get("b2", 0.7))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "b1, b2 must be numbers"}), 400
+    if not (0.0 < b1 < 1.0 and 0.0 < b2 < 1.0):
+        return jsonify({"ok": False, "error":
+                        "b1 and b2 must lie strictly between 0 and 1; they "
+                        "are conditional probabilities, not Boltzmann "
+                        f"weights (got b1={b1}, b2={b2})"}), 400
+    seed = data.get("seed")
+    if seed is not None:
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "seed must be an integer"}), 400
+
+    h, v = _stochastic.sample(n, b1, b2, seed=seed)
+    H = _stochastic.height_function(h, v).astype(np.int16)
+    lo, hi = int(H.min()), int(H.max())
+    return jsonify({
+        "ok": True,
+        "frame": {
+            "n": n,
+            "height_b64": base64.b64encode(H.tobytes()).decode("ascii"),
+            "active_b64": base64.b64encode(
+                np.zeros((n + 1) * (n + 1), dtype=np.uint8).tobytes()
+            ).decode("ascii"),
+            "min": lo, "max": hi,
+        },
+        "info": {
+            "method": "stochastic-sequential",
+            "delta": float(_stochastic.delta(b1, b2)),
+            "b1": b1, "b2": b2, "seed": seed,
+        },
+    })
 
 
 @app.route("/api/config", methods=["GET"])

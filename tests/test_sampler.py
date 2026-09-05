@@ -1489,15 +1489,16 @@ def test_poll_loop_tolerates_transient_failures():
     code = "\n".join(ln for ln in src.splitlines()
                      if not ln.strip().startswith("//"))
 
-    start = code.index("const jobId = startData.job_id")
-    loop = code[start:start + 3000]
+    # anchor on the main handler: fetchExactSample also declares a jobId
+    start = code.index("btnExact.addEventListener")
+    loop = code[start:start + 4000]
 
     assert "MAX_CONSECUTIVE_FAILURES" in loop, (
         "poll loop has no tolerance for transient status-check failures")
     assert "consecutiveFailures = 0" in loop, (
         "failure counter is never reset, so isolated failures accumulate")
     # the fetch/json pair must be individually guarded, not just the whole loop
-    assert loop.index("try {") < loop.index("await fetch(`/api/exact/status"), (
+    assert loop.index("try {") < loop.index("await fetch(`/api/exact/status`" if False else "await fetch(`/api/exact/status"), (
         "the status fetch is not inside its own try block")
     # and the interval must back off rather than hammering for 45 minutes
     assert "elapsedPolling < 30" in loop and "5000" in loop, (
@@ -1572,6 +1573,172 @@ def test_adaptive_start_saves_work_without_changing_the_law():
 def cftp_exact_sample_for_test(n, w, seed, T0):
     from sixvertex.cftp_exact import cftp_sample
     return cftp_sample(n, w, master_seed=seed, initial_T=T0)
+
+
+def test_colour_classifier_uses_the_corrected_convention():
+    """Regression, reported by a collaborator: the colour pickers labelled
+    b1/b2 were in fact colouring c1/c2.
+
+    When the b/c labels were corrected across the four samplers, this fourth
+    classifier -- the one used only for rendering -- was missed. His
+    diagnostic: in a large simulation the frozen corners must be a- and
+    b-types. Measured after the fix at n=60 uniform, the corner blocks were
+    99.75% a/b.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    start = js.index("function classifyFaceLocal")
+    body = js[start:start + 900]
+    code = "\n".join(ln for ln in body.splitlines()
+                     if not ln.strip().startswith("//"))
+    assert 'if (l && t && !b && !r) return "c1"' in code, (
+        "(l,t) must be a c-type; the rendering classifier has the old labels")
+    assert 'if (!l && t && b && !r) return "b1"' in code, (
+        "(t,b) must be a b-type; the rendering classifier has the old labels")
+
+
+def test_fluctuation_normalisation_preserves_variance():
+    """Height fluctuations are shown as (H1 - H2)/sqrt(2) from two independent
+    exact samples. Var[H1 - H2] = 2 Var[H], so the sqrt(2) returns the variance
+    of a single height function -- which is the point of that normalisation.
+
+    Verified numerically at n=20 over 60 samples: the pointwise fluctuation
+    variance of a single sample was 0.7228 and the variance of the normalised
+    difference 0.7478, a ratio of 1.03.
+    """
+    from sixvertex.cftp_exact import cftp_sample
+    w = dict(a1=1., a2=1., b1=1., b2=1., c1=1., c2=1.)
+    n = 14
+    S = np.array([np.asarray(cftp_sample(n, w, master_seed=4000 + k)[0], float)
+                  for k in range(40)])
+    mean = S.mean(axis=0)
+    var_single = float(((S - mean) ** 2).mean())
+    diffs = [(S[2*k] - S[2*k+1]) / math.sqrt(2) for k in range(20)]
+    var_diff = float(np.mean([(d ** 2).mean() for d in diffs]))
+    ratio = var_diff / var_single
+    assert 0.8 < ratio < 1.25, (
+        f"sqrt(2) normalisation does not preserve variance: ratio {ratio:.3f}")
+
+
+def test_new_export_and_view_modes_exist():
+    """Requested by a collaborator: a lattice-path view, a fluctuation view,
+    and text export so others can work with the output."""
+    import os
+    here = os.path.dirname(__file__)
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+
+    for opt in ('value="paths"', 'value="fluct"'):
+        assert opt in html, f"missing view mode {opt}"
+    for btn in ("btn-fluct", "btn-save-heights", "btn-save-types"):
+        assert f'id="{btn}"' in html, f"missing control {btn}"
+    assert "function drawPaths" in js
+    assert "heightsAsText" in js and "typesAsText" in js
+    # paths are level lines, so marching squares -- per-edge segments do not join
+    assert "lo + 0.5" in js, "path view is not drawing level lines"
+    # the type codes must follow the corrected convention order
+    assert "{ a1: 1, a2: 2, b1: 3, b2: 4, c1: 5, c2: 6 }" in js
+
+
+def test_stochastic_model_is_reachable_and_height_function_is_valid():
+    """The stochastic sampler existed in the package but appeared nowhere in
+    the server or the UI, so nobody using the website could reach it -- a whole
+    exact method, covering Delta >= 1, invisible.
+
+    Its height_function was also wrong: a double cumulative sum giving steps of
+    8 rather than 1. Nothing called it, which is exactly why the error
+    survived. The correct one counts horizontal arrows crossing column j in
+    rows above i: vertically the step is h[i,j] in {0,1}, and horizontally the
+    sum telescopes through arrow conservation to v[0,j] - v[i,j].
+    """
+    import os, importlib
+    from sixvertex import stochastic as st
+
+    # height function must actually be one
+    for n in (8, 24, 40):
+        h, v = st.sample(n, 0.3, 0.7, seed=2)
+        H = st.height_function(h, v)
+        assert H.shape == (n + 1, n + 1)
+        assert np.abs(np.diff(H, axis=1)).max() <= 1, "horizontal step > 1"
+        assert np.abs(np.diff(H, axis=0)).max() <= 1, "vertical step > 1"
+
+    # reachable from the server
+    server = importlib.import_module("server")
+    app = server.app.test_client()
+    r = app.post("/api/stochastic",
+                 json={"n": 32, "b1": 0.3, "b2": 0.7, "seed": 5})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] and body["info"]["method"] == "stochastic-sequential"
+    assert body["info"]["delta"] >= 1.0, "stochastic weights must give Delta >= 1"
+
+    # b1, b2 are probabilities, not Boltzmann weights
+    for bad in ({"b1": 0}, {"b1": 1.5}, {"b2": -0.1}):
+        rr = app.post("/api/stochastic", json={"n": 10, **bad})
+        assert rr.status_code == 400, f"{bad} should be rejected"
+
+    # and reachable from the page
+    here = os.path.dirname(__file__)
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    assert 'value="stochastic"' in html, "no model selector entry"
+    assert 'id="btn-stoch"' in html, "no way to trigger a stochastic sample"
+    assert "/api/stochastic" in js, "client never calls the endpoint"
+
+
+def test_seed_is_settable_and_reproduces():
+    """A fixed seed must reproduce a sample exactly -- that is what lets
+    someone else regenerate a figure. The server accepted a seed but the UI
+    never sent one."""
+    import os, importlib
+    server = importlib.import_module("server")
+    app = server.app.test_client()
+
+    a = app.post("/api/stochastic",
+                 json={"n": 24, "b1": 0.3, "b2": 0.7, "seed": 99}).get_json()
+    b = app.post("/api/stochastic",
+                 json={"n": 24, "b1": 0.3, "b2": 0.7, "seed": 99}).get_json()
+    c = app.post("/api/stochastic",
+                 json={"n": 24, "b1": 0.3, "b2": 0.7, "seed": 100}).get_json()
+    assert a["frame"]["height_b64"] == b["frame"]["height_b64"], (
+        "same seed did not reproduce the sample")
+    assert a["frame"]["height_b64"] != c["frame"]["height_b64"], (
+        "different seeds gave the same sample")
+
+    here = os.path.dirname(__file__)
+    html = open(os.path.join(here, "..", "static", "index.html")).read()
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    assert 'id="seed"' in html, "no seed input in the UI"
+    assert "currentSeed()" in js, "the client never reads the seed box"
+    assert js.count("seed: currentSeed()") >= 2, (
+        "seed is not passed on every sampling path")
+
+
+def test_model_switch_disables_rather_than_hides_and_restores_the_chain():
+    """Switching to the stochastic model must not silently break the DWBC one.
+
+    Two things were wrong in the first version. The DWBC controls were hidden
+    rather than disabled, which makes the tool look like it lost features; and
+    a stochastic sample clears the live chain (different model, different
+    boundary conditions), so switching back left Run dead at 0 sweeps -- the
+    same failure as the earlier dead-Run-after-exact-sample bug.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    start = code.index("function updateModelUI")
+    body = code[start:start + 1800]
+    assert 'el.style.display = "";' in body, (
+        "DWBC controls are hidden on model switch; disable them with a reason "
+        "instead so the tool does not look like it lost features")
+    assert "el.disabled = true" in body, "controls are not disabled in stochastic mode"
+    assert "el.title =" in body, "disabled controls give no reason"
+    assert "if (!sampler) localInit();" in body, (
+        "switching back to DWBC does not rebuild the chain; Run will be dead")
 
 
 if __name__ == "__main__":
