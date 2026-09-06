@@ -1954,6 +1954,44 @@ def test_paths_are_black_on_white():
     assert "#1" in ink or "#0" in ink, f"path ink is not dark: {ink}"
 
 
+def test_model_switch_disables_every_dwbc_control():
+    """Reported: the DWBC controls stayed live in stochastic mode.
+
+    Three separate causes, all mine:
+      - the reset button's id is btn-init, not btn-reset, so it was never in
+        the list being disabled;
+      - updateDeltaDisplay() re-enabled the exact button on any slider change,
+        because it did not know which model was selected;
+      - the mixing badge lingered from an earlier DWBC run. It compares two
+        Markov chains, and the stochastic model has no chain at all.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    assert "function isStochastic" in code, (
+        "no single source of truth for which model is selected")
+
+    # every DWBC control, reset included
+    start = code.index("function updateModelUI")
+    body = code[start:start + 1800]
+    for btn in ("btn-init", "btn-play", "btn-step", "btn-exact", "btn-fluct"):
+        assert btn in body, f"{btn} is not disabled when the model switches"
+
+    # the exact button must stay off regardless of slider activity
+    i = code.index("btnExact.disabled =")
+    assert "isStochastic()" in code[i:i + 120], (
+        "updateDeltaDisplay re-enables the exact button in stochastic mode")
+
+    # and the chain diagnostic must not show for a model with no chain
+    j = code.index("function updateMixingBadge")
+    assert "isStochastic()" in code[j:j + 500], (
+        "the mixing badge is shown for the stochastic model, which has no "
+        "Markov chain")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

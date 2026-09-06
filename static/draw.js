@@ -142,6 +142,11 @@
     return "#" + [r, g, b].map(x => x.toString(16).padStart(2, "0")).join("");
   }
 
+  function isStochastic() {
+    const m = document.getElementById("model");
+    return !!m && m.value === "stochastic";
+  }
+
   function currentSeed() {
     const el = document.getElementById("seed");
     if (!el) return null;
@@ -226,7 +231,9 @@
 
     const n = parseInt(nSlider.value, 10);
     const safe = isExactSafe(w, n);
-    btnExact.disabled = !safe || exactInFlight;
+    // In stochastic mode this button drives the other model; keep it off.
+    // Without this check, moving any slider re-enabled it.
+    btnExact.disabled = !safe || exactInFlight || isStochastic();
 
     // Warn when CFTP is valid but likely to be impractically slow.
     //
@@ -891,7 +898,12 @@
 
   function updateMixingBadge() {
     const el = document.getElementById("mixing-badge");
-    if (!el || !sampler || !shadow) return;
+    if (!el) return;
+    // The badge compares two Markov chains. The stochastic model has no chain
+    // at all -- one sweep gives an exact sample -- so the diagnostic is
+    // meaningless there and must not linger from an earlier DWBC run.
+    if (isStochastic()) { el.style.display = "none"; return; }
+    if (!sampler || !shadow) return;
     if (totalSweeps < 200) { el.style.display = "none"; return; }
 
     const gap = Math.abs(cFraction(sampler) - cFraction(shadow));
@@ -1081,11 +1093,14 @@
     const stoch = modelSel.value === "stochastic";
     if (stochParams) stochParams.style.display = stoch ? "block" : "none";
     if (stochNote) stochNote.style.display = stoch ? "block" : "none";
+    const badge = document.getElementById("mixing-badge");
+    if (badge && stoch) badge.style.display = "none";
     // The DWBC controls drive a different model with different boundary
     // conditions. Disable rather than hide them: leaving them clickable would
     // invite a silent mismatch, but hiding them makes the tool look like it
     // lost features. Disabled with a reason is the honest middle.
-    for (const id of ["btn-play", "btn-step", "btn-exact", "btn-fluct"]) {
+    for (const id of ["btn-init", "btn-play", "btn-step",
+                      "btn-exact", "btn-fluct"]) {
       const el = document.getElementById(id);
       if (!el) continue;
       el.style.display = "";
