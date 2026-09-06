@@ -99,6 +99,10 @@
   // fluctuation of one sample about its mean. Rendered on a diverging scale
   // (red positive, blue negative, white near zero).
   let fluctFrame = null;
+  let arrowFrame = null;      // stochastic model: the arrow configuration
+
+  // Paths are drawn black on white, matching the figures in the literature.
+  const PATH_INK = "#11100e";
 
   function setFluctAvailable(on) {
     const opt = document.getElementById("opt-fluct");
@@ -480,11 +484,12 @@
         }
       }
     } else if (mode === "paths") {
-      // Filled by drawPaths() after the blit; nothing per-pixel here.
+      // White background; drawPaths() puts black paths on top after the blit.
+      // This matches the convention in the literature and prints legibly.
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
           const idx = (i * n + j) * 4;
-          img.data[idx] = 12; img.data[idx + 1] = 14; img.data[idx + 2] = 18;
+          img.data[idx] = 255; img.data[idx + 1] = 255; img.data[idx + 2] = 255;
           img.data[idx + 3] = 255;
         }
       }
@@ -593,7 +598,7 @@
     // is not the convention used in the literature or described in this
     // interface.)
     const n = frame.n;
-    ctx.strokeStyle = "#e8e2d8";
+    ctx.strokeStyle = PATH_INK;
     ctx.lineWidth = Math.max(0.05, Math.min(0.16, 10 / n));
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
@@ -601,10 +606,19 @@
 
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
-        const tl = frame.get(i, j),     tr = frame.get(i, j + 1);
-        const bl = frame.get(i + 1, j), br = frame.get(i + 1, j + 1);
-        const t = (tr - tl) === 1, b = (br - bl) === 1;
-        const l = (bl - tl) === 1,  r = (br - tr) === 1;
+        let l, t, b, r;
+        if (arrowFrame && arrowFrame.n === n) {
+          // stochastic model: read the arrows directly
+          l = arrowFrame.h(i, j) === 1;
+          r = arrowFrame.h(i, j + 1) === 1;
+          b = arrowFrame.v(i, j) === 1;
+          t = arrowFrame.v(i + 1, j) === 1;
+        } else {
+          const tl = frame.get(i, j),     tr = frame.get(i, j + 1);
+          const bl = frame.get(i + 1, j), br = frame.get(i + 1, j + 1);
+          t = (tr - tl) === 1; b = (br - bl) === 1;
+          l = (bl - tl) === 1; r = (br - tr) === 1;
+        }
         const cx = j + 0.5, cy = i + 0.5;
         if (l) { ctx.moveTo(cx, cy); ctx.lineTo(j, cy); }
         if (r) { ctx.moveTo(cx, cy); ctx.lineTo(j + 1, cy); }
@@ -809,6 +823,7 @@
     // samples no longer describes what is on screen. Drop it and leave the
     // view, otherwise the canvas stays frozen on stale data.
     fluctFrame = null;
+    arrowFrame = null;
     gapEMA = null;
     lastBadgeUpdate = 0;
     setFluctAvailable(false);
@@ -1123,7 +1138,19 @@
       const data = await res.json();
       if (!data.ok) { exactInfo.textContent = data.error; return; }
       lastFrame = frameFromServerData(data.frame);
+      // The stochastic model's height function steps by 0 or 1, not +-1, so
+      // the DWBC face classifier cannot read it. Keep the arrows and draw the
+      // paths from those instead.
+      const f = data.frame, N = f.n;
+      const hb = Uint8Array.from(atob(f.h_b64), c => c.charCodeAt(0));
+      const vb = Uint8Array.from(atob(f.v_b64), c => c.charCodeAt(0));
+      arrowFrame = {
+        n: N,
+        h: (i, j) => hb[i * (N + 1) + j],     // enters (i,j) from the left
+        v: (i, j) => vb[i * N + j],           // enters (i,j) from below
+      };
       sampler = null;
+      viewMode.value = "paths";
       fitCamera(); draw();
       const inf = data.info;
       exactInfo.textContent =

@@ -283,6 +283,12 @@ def api_stochastic():
     h, v = _stochastic.sample(n, b1, b2, seed=seed)
     H = _stochastic.height_function(h, v).astype(np.int16)
     lo, hi = int(H.min()), int(H.max())
+    # The arrows, not just the height function. This model's height function
+    # steps by 0 or 1, whereas the DWBC one steps by exactly +-1, so the DWBC
+    # face classifier cannot read it -- routing it through that renderer
+    # collapsed six vertex types down to two. The path view draws from these
+    # instead: at vertex (i,j) the occupied edges are left=h[i,j],
+    # bottom=v[i,j], right=h[i,j+1], top=v[i+1,j].
     return jsonify({
         "ok": True,
         "frame": {
@@ -291,6 +297,10 @@ def api_stochastic():
             "active_b64": base64.b64encode(
                 np.zeros((n + 1) * (n + 1), dtype=np.uint8).tobytes()
             ).decode("ascii"),
+            "h_b64": base64.b64encode(
+                np.ascontiguousarray(h, dtype=np.uint8).tobytes()).decode("ascii"),
+            "v_b64": base64.b64encode(
+                np.ascontiguousarray(v, dtype=np.uint8).tobytes()).decode("ascii"),
             "min": lo, "max": hi,
         },
         "info": {

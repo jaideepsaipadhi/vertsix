@@ -1899,6 +1899,61 @@ def test_mixing_badge_is_smoothed_and_size_scaled():
         "reset does not clear the smoothed gap")
 
 
+def test_stochastic_paths_are_drawn_from_arrows_not_the_height_function():
+    """Reported: the stochastic picture showed only two vertex types.
+
+    The cause was routing it through the DWBC renderer. That classifier assumes
+    every adjacent pair of heights differs by exactly +-1, but this model's
+    height function steps by 0 or 1, so it hit patterns like (1,0,0,0) that are
+    not legal six-vertex types at all and collapsed six types into two.
+
+    The arrows carry the information -- all six types are present in them -- so
+    the path view reads those directly: at vertex (i,j) the occupied edges are
+    left=h[i,j], bottom=v[i,j], right=h[i,j+1], top=v[i+1,j].
+    """
+    import os, importlib
+    from sixvertex import stochastic as st
+
+    n = 30
+    h, v = st.sample(n, 0.3, 0.7, seed=3)
+    seen = set()
+    for i in range(n):
+        for j in range(n):
+            seen.add((int(h[i, j]), int(v[i, j]),
+                      int(h[i, j + 1]), int(v[i + 1, j])))
+    assert len(seen) == 6, f"expected all six vertex types, saw {len(seen)}"
+
+    # the server must hand the arrows over, not only the height function
+    server = importlib.import_module("server")
+    body = server.app.test_client().post(
+        "/api/stochastic", json={"n": 16, "b1": 0.3, "b2": 0.7, "seed": 1}
+    ).get_json()
+    assert "h_b64" in body["frame"] and "v_b64" in body["frame"], (
+        "the endpoint returns no arrows, so the path view cannot draw the "
+        "six types")
+
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    assert "arrowFrame" in js, "the client never reads the arrows"
+    assert "arrowFrame.h(i, j)" in js, "paths are not drawn from the arrows"
+
+
+def test_paths_are_black_on_white():
+    """Requested: invert the path view, black paths on a white background --
+    the convention in the literature, and it prints legibly."""
+    import os
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+    i = code.index('mode === "paths"')
+    branch = code[i:i + 500]
+    assert "img.data[idx] = 255" in branch, "path background is not white"
+    assert "PATH_INK" in code, "path colour is not defined"
+    ink = code[code.index("PATH_INK ="):code.index("PATH_INK =") + 60]
+    assert "#1" in ink or "#0" in ink, f"path ink is not dark: {ink}"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
