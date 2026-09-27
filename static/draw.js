@@ -384,6 +384,47 @@
     ];
   }
 
+  // The four occupied edges at face (i,j), from whichever representation the
+  // current model provides.
+  //
+  // This exists because the two views that need it -- the coloured-vertex
+  // raster and the path drawing -- used to compute it separately, and only the
+  // path drawing was taught about the stochastic model. The result was that
+  // the coloured view read the stochastic height function with DWBC logic and
+  // showed two vertex types instead of six.
+  //
+  // DWBC: heights of adjacent lattice points differ by exactly +-1, so the
+  // sign of each difference is the edge bit.
+  // Stochastic: the height function steps by 0 or 1, so those differences mean
+  // something else entirely; the arrows are the source of truth. At vertex
+  // (i,j) the occupied edges are left=h(i,j), right=h(i,j+1), bottom=v(i,j),
+  // top=v(i+1,j).
+  function faceBits(frame, i, j) {
+    if (arrowFrame && arrowFrame.n === frame.n) {
+      return { l: arrowFrame.h(i, j) === 1,
+               r: arrowFrame.h(i, j + 1) === 1,
+               b: arrowFrame.v(i, j) === 1,
+               t: arrowFrame.v(i + 1, j) === 1 };
+    }
+    const tl = frame.get(i, j),     tr = frame.get(i, j + 1);
+    const bl = frame.get(i + 1, j), br = frame.get(i + 1, j + 1);
+    return { l: (bl - tl) === 1, t: (tr - tl) === 1,
+             b: (br - bl) === 1, r: (br - tr) === 1 };
+  }
+
+  function classifyBits(l, t, b, r) {
+    if (!l && !t && !b && !r) return "a1";
+    if (l && t && b && r) return "a2";
+    if (l && t && !b && !r) return "c1";
+    if (!l && !t && b && r) return "c2";
+    if (!l && t && b && !r) return "b1";
+    if (l && !t && !b && r) return "b2";
+    // Not one of the six. Previously this fell through to "a1", which is how
+    // the stochastic mislabelling stayed invisible: a wrong picture rather
+    // than a loud one. Name it instead.
+    return "invalid";
+  }
+
   function classifyFaceLocal(tl, tr, bl, br) {
     const top = tr - tl, bottom = br - bl, left = bl - tl, right = br - tr;
     const t = top === 1, b = bottom === 1, l = left === 1, r = right === 1;
@@ -503,8 +544,12 @@
     } else if (mode === "vertex6") {
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
-          const type = classifyFaceLocal(frame.get(i, j), frame.get(i, j + 1), frame.get(i + 1, j), frame.get(i + 1, j + 1));
-          const [r, g, b] = VERTEX6_COLORS[type];
+          const fb = faceBits(frame, i, j);
+          const type = classifyBits(fb.l, fb.t, fb.b, fb.r);
+          // A face that is not one of the six is a bug, not a colour choice:
+          // paint it magenta so it cannot be mistaken for a valid type.
+          const [r, g, b] = type === "invalid" ? [255, 0, 255]
+                                               : VERTEX6_COLORS[type];
           const idx = (i * n + j) * 4;
           img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = b;
           img.data[idx + 3] = 255;
@@ -613,19 +658,8 @@
 
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
-        let l, t, b, r;
-        if (arrowFrame && arrowFrame.n === n) {
-          // stochastic model: read the arrows directly
-          l = arrowFrame.h(i, j) === 1;
-          r = arrowFrame.h(i, j + 1) === 1;
-          b = arrowFrame.v(i, j) === 1;
-          t = arrowFrame.v(i + 1, j) === 1;
-        } else {
-          const tl = frame.get(i, j),     tr = frame.get(i, j + 1);
-          const bl = frame.get(i + 1, j), br = frame.get(i + 1, j + 1);
-          t = (tr - tl) === 1; b = (br - bl) === 1;
-          l = (bl - tl) === 1; r = (br - tr) === 1;
-        }
+        const fb = faceBits(frame, i, j);
+        const l = fb.l, t = fb.t, b = fb.b, r = fb.r;
         const cx = j + 0.5, cy = i + 0.5;
         if (l) { ctx.moveTo(cx, cy); ctx.lineTo(j, cy); }
         if (r) { ctx.moveTo(cx, cy); ctx.lineTo(j + 1, cy); }
@@ -659,14 +693,20 @@
   const TYPE_CODE = { a1: 1, a2: 2, b1: 3, b2: 4, c1: 5, c2: 6 };
 
   function typesAsText(frame) {
-    // NxN table of 1..6 = a1,a2,b1,b2,c1,c2
+    // NxN table of 1..6 = a1,a2,b1,b2,c1,c2; 0 marks a face that is not a
+    // legal vertex type, which should never occur.
+    //
+    // This goes through the same shared edge bits as the views. It used to
+    // classify raw heights, which is valid only under DWBC -- exporting a
+    // stochastic sample wrote the same two-type garbage the coloured view
+    // was showing, except into a file, where it looks authoritative.
     const n = frame.n, rows = [];
     for (let i = 0; i < n; i++) {
       const row = [];
       for (let j = 0; j < n; j++) {
-        row.push(TYPE_CODE[classifyFaceLocal(
-          frame.get(i, j), frame.get(i, j + 1),
-          frame.get(i + 1, j), frame.get(i + 1, j + 1))]);
+        const fb = faceBits(frame, i, j);
+        const t = classifyBits(fb.l, fb.t, fb.b, fb.r);
+        row.push(t === "invalid" ? 0 : TYPE_CODE[t]);
       }
       rows.push(row.join("\t"));
     }
@@ -1095,6 +1135,19 @@
     if (stochNote) stochNote.style.display = stoch ? "block" : "none";
     const badge = document.getElementById("mixing-badge");
     if (badge && stoch) badge.style.display = "none";
+
+    // "liquid / frozen" marks the sites a local Markov chain can still flip.
+    // The stochastic model has no chain, and the server sends an empty mask
+    // for it, so that view would render the whole domain as frozen -- a
+    // confident wrong picture. Take it off the menu instead.
+    const activeOpt = document.querySelector('#viewmode option[value="active"]');
+    if (activeOpt) {
+      activeOpt.disabled = stoch;
+      activeOpt.textContent = stoch
+        ? "liquid / frozen (DWBC only)"
+        : "liquid / frozen (arctic boundary)";
+    }
+    if (stoch && viewMode.value === "active") viewMode.value = "paths";
     // The DWBC controls drive a different model with different boundary
     // conditions. Disable rather than hide them: leaving them clickable would
     // invite a silent mismatch, but hiding them makes the tool look like it

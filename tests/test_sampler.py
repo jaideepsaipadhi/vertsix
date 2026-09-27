@@ -1992,6 +1992,93 @@ def test_model_switch_disables_every_dwbc_control():
         "Markov chain")
 
 
+def test_all_views_read_the_arrows_for_the_stochastic_model():
+    """Reported twice: the stochastic picture "has only two types of vertices".
+
+    The first fix taught the PATH view to read the arrows but left the
+    coloured-vertex raster classifying the stochastic height function with
+    DWBC logic. That logic assumes adjacent heights differ by exactly +-1;
+    this model's differ by 0 or 1. Measured on the live site at n=24, the
+    coloured view saw a1 x 272 and b2 x 275 -- two types -- plus 29 faces
+    that fell through a silent `return "a1"`. The arrows had all six the
+    whole time (a1 263, a2 264, b1 9, b2 11, c1 26, c2 3).
+
+    Two changes stop this recurring: both views now take their edge bits from
+    one `faceBits` helper, and a face that is not one of the six returns
+    "invalid" instead of masquerading as a1.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    js = open(os.path.join(here, "..", "static", "draw.js")).read()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    assert "function faceBits" in code, "no shared edge-bit helper"
+    assert "function classifyBits" in code, "no shared classifier"
+    assert 'return "invalid"' in code, (
+        "an unclassifiable face still falls through to a valid type; that is "
+        "what hid this bug")
+
+    # the coloured raster must go through the shared helper, not the
+    # height-only classifier
+    i = code.index('mode === "vertex6"')
+    branch = code[i:i + 700]
+    assert "faceBits(frame, i, j)" in branch, (
+        "the coloured-vertex view does not use the shared edge bits, so it "
+        "will misread the stochastic model again")
+    assert "classifyFaceLocal(" not in branch, (
+        "the coloured-vertex view still classifies raw heights")
+
+    # and the path view must use the same helper rather than its own copy
+    j = code.index("function drawPaths")
+    paths = code[j:j + 1600]
+    assert "faceBits(frame, i, j)" in paths, (
+        "the path view has its own bit extraction again; the two will diverge")
+
+    # the types EXPORT had the same defect: it classified raw heights, so a
+    # stochastic sample exported the same two-type garbage -- into a file,
+    # where it looks authoritative.
+    k = code.index("function typesAsText")
+    export = code[k:k + 900]
+    assert "faceBits(frame, i, j)" in export, (
+        "the vertex-type export still classifies raw heights")
+    assert "classifyFaceLocal(" not in export, (
+        "the vertex-type export still uses the height-only classifier")
+
+    # the chain-only view must not be offered for a model with no chain
+    assert 'option[value="active"]' in code, (
+        "the liquid/frozen view is not gated; for the stochastic model the "
+        "server sends an empty mask, so it would render everything frozen")
+
+
+def test_stochastic_arrows_give_all_six_vertex_types():
+    """The arrows must actually contain six types -- otherwise the view fix
+    above would be dressing up a sampler bug."""
+    from sixvertex import stochastic as st
+
+    def bits(l, t, b, r):
+        if not l and not t and not b and not r: return "a1"
+        if l and t and b and r:                 return "a2"
+        if l and t and not b and not r:         return "c1"
+        if not l and not t and b and r:         return "c2"
+        if not l and t and b and not r:         return "b1"
+        if l and not t and not b and r:         return "b2"
+        return "invalid"
+
+    for n, seed in ((24, 5), (40, 7)):
+        h, v = st.sample(n, 0.3, 0.7, seed=seed)
+        counts = {}
+        for i in range(n):
+            for j in range(n):
+                k = bits(bool(h[i, j]), bool(v[i + 1, j]),
+                         bool(v[i, j]), bool(h[i, j + 1]))
+                counts[k] = counts.get(k, 0) + 1
+        assert counts.get("invalid", 0) == 0, (
+            f"n={n}: {counts['invalid']} faces are not legal vertex types")
+        assert len(counts) == 6, (
+            f"n={n}: expected all six vertex types, saw {sorted(counts)}")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
