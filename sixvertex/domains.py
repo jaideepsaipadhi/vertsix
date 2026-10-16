@@ -425,13 +425,18 @@ def sweep(H, mask, w, rand, plan=None, table=None):
     return H
 
 
-def cftp_sample(mask, w, master_seed=0, initial_T=16, max_T=1 << 20):
+def cftp_sample(mask, w, master_seed=None, initial_T=16, max_T=1 << 20):
     """Exact sample on a general domain by Coupling From The Past.
 
     Same doubling schedule and same monotonicity requirement as the DWBC
     sampler: the two extremal height functions are run forward from -T under
     one shared random stream, and T doubles until they meet.
     """
+    if master_seed is None:
+        # The DWBC sampler already did this; this one did not, so a request
+        # that simply omitted the seed reached numpy as SeedSequence([None])
+        # and surfaced to the user as "int() argument must be a string...".
+        master_seed = int(np.random.randint(0, 2 ** 31 - 1))
     if not in_monotone_region(w):
         raise DomainError(
             "weights are outside the monotone region c1c2 >= a1a2 and "

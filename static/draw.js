@@ -147,6 +147,11 @@
     return !!m && m.value === "stochastic";
   }
 
+  function isDomain() {
+    const m = document.getElementById("model");
+    return !!m && m.value === "domain";
+  }
+
   function currentSeed() {
     const el = document.getElementById("seed");
     if (!el) return null;
@@ -233,7 +238,12 @@
     const safe = isExactSafe(w, n);
     // In stochastic mode this button drives the other model; keep it off.
     // Without this check, moving any slider re-enabled it.
-    btnExact.disabled = !safe || exactInFlight || isStochastic();
+    //
+    // Same for a general domain: this button samples the SQUARE, so leaving
+    // it live there would quietly hand back a picture of the wrong region.
+    // updateModelUI disables it on switching models, but this function runs
+    // on every slider move and would undo that.
+    btnExact.disabled = !safe || exactInFlight || isStochastic() || isDomain();
 
     // Warn when CFTP is valid but likely to be impractically slow.
     //
@@ -399,7 +409,17 @@
   // something else entirely; the arrows are the source of truth. At vertex
   // (i,j) the occupied edges are left=h(i,j), right=h(i,j+1), bottom=v(i,j),
   // top=v(i+1,j).
+  // Whether face (i, j) belongs to the model at all. Square models answer
+  // yes everywhere; a general domain does not. Every renderer and every
+  // export goes through this, for the same reason they all go through
+  // faceBits: a per-call-site check is how the stochastic bug survived three
+  // rounds of fixes.
+  function faceInDomain(frame, i, j) {
+    return !frame.inDomain || frame.inDomain(i, j);
+  }
+
   function faceBits(frame, i, j) {
+    if (!faceInDomain(frame, i, j)) return null;
     if (arrowFrame && arrowFrame.n === frame.n) {
       return { l: arrowFrame.h(i, j) === 1,
                r: arrowFrame.h(i, j + 1) === 1,
@@ -425,22 +445,6 @@
     return "invalid";
   }
 
-  function classifyFaceLocal(tl, tr, bl, br) {
-    const top = tr - tl, bottom = br - bl, left = bl - tl, right = br - tr;
-    const t = top === 1, b = bottom === 1, l = left === 1, r = right === 1;
-    if (!l && !t && !b && !r) return "a1";
-    if (l && t && b && r) return "a2";
-    // Standard convention: (l,t) is a c-type, (t,b) is a b-type. This
-    // classifier was missed when the labels were corrected elsewhere, so the
-    // colour pickers for b1/b2 were in fact colouring c1/c2. Diagnostic: in a
-    // large simulation the frozen corners must be a- and b-types.
-    if (l && t && !b && !r) return "c1";
-    if (!l && !t && b && r) return "c2";
-    if (!l && t && b && !r) return "b1";
-    if (l && !t && !b && r) return "b2";
-    return "a1";
-  }
-
   function frameFromSampler(s) {
     const size = s.size;
     const { min, max } = s.minMax();
@@ -449,6 +453,7 @@
       n: s.n,
       get: (i, j) => s.H[i * size + j],
       getActive: (i, j) => active[i * size + j] === 1,
+      inDomain: () => true,
       min, max,
     };
   }
@@ -456,6 +461,13 @@
   function frameFromServerData(data) {
     const heightBytes = Uint8Array.from(atob(data.height_b64), c => c.charCodeAt(0));
     const activeBytes = Uint8Array.from(atob(data.active_b64), c => c.charCodeAt(0));
+    const domainBytes = data.domain_b64
+      ? Uint8Array.from(atob(data.domain_b64), c => c.charCodeAt(0)) : null;
+    if (domainBytes && domainBytes.length !== data.n * data.n) {
+      throw new Error(
+        `malformed domain mask: n=${data.n} implies ${data.n * data.n} cells, ` +
+        `got ${domainBytes.length}`);
+    }
     const height = new Int16Array(heightBytes.buffer);
     const size = data.n + 1;
     const expected = size * size;
@@ -480,6 +492,11 @@
       n: data.n,
       get: (i, j) => height[i * size + j],
       getActive: (i, j) => activeBytes[i * size + j] === 1,
+      // General domains (Gorin-Kenyon): cells outside the region are not
+      // part of the model and must not be drawn or exported. Defaults to
+      // "everything is inside" so the square models are untouched.
+      inDomain: domainBytes ? ((i, j) => domainBytes[i * data.n + j] === 1)
+                            : (() => true),
       min: data.min, max: data.max,
     };
   }
@@ -493,6 +510,12 @@
     if (mode === "active") {
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
+          if (!faceInDomain(frame, i, j)) {
+            const idx0 = (i * n + j) * 4;
+            img.data[idx0] = [26, 30, 38][0]; img.data[idx0 + 1] = [26, 30, 38][1];
+            img.data[idx0 + 2] = [26, 30, 38][2]; img.data[idx0 + 3] = 255;
+            continue;
+          }
           const isActive = frame.getActive(i, j) || frame.getActive(i + 1, j) ||
                             frame.getActive(i, j + 1) || frame.getActive(i + 1, j + 1);
           const idx = (i * n + j) * 4;
@@ -545,10 +568,14 @@
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
           const fb = faceBits(frame, i, j);
-          const type = classifyBits(fb.l, fb.t, fb.b, fb.r);
+          // null means the face is outside the domain: not part of the model,
+          // so it gets the page background, never a vertex colour.
+          const type = fb === null ? null
+                                   : classifyBits(fb.l, fb.t, fb.b, fb.r);
           // A face that is not one of the six is a bug, not a colour choice:
           // paint it magenta so it cannot be mistaken for a valid type.
-          const [r, g, b] = type === "invalid" ? [255, 0, 255]
+          const [r, g, b] = type === null ? [26, 30, 38]
+                          : type === "invalid" ? [255, 0, 255]
                                                : VERTEX6_COLORS[type];
           const idx = (i * n + j) * 4;
           img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = b;
@@ -560,6 +587,12 @@
       const span = Math.max(1, max - min);
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
+          if (!faceInDomain(frame, i, j)) {
+            const idx0 = (i * n + j) * 4;
+            img.data[idx0] = [26, 30, 38][0]; img.data[idx0 + 1] = [26, 30, 38][1];
+            img.data[idx0 + 2] = [26, 30, 38][2]; img.data[idx0 + 3] = 255;
+            continue;
+          }
           const avg = (frame.get(i, j) + frame.get(i + 1, j) + frame.get(i, j + 1) + frame.get(i + 1, j + 1)) / 4;
           const t = (avg - min) / span;
           const [r, g, b] = colorFor(t);
@@ -659,6 +692,7 @@
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
         const fb = faceBits(frame, i, j);
+        if (fb === null) continue;          // outside the domain
         const l = fb.l, t = fb.t, b = fb.b, r = fb.r;
         const cx = j + 0.5, cy = i + 0.5;
         if (l) { ctx.moveTo(cx, cy); ctx.lineTo(j, cy); }
@@ -705,6 +739,7 @@
       const row = [];
       for (let j = 0; j < n; j++) {
         const fb = faceBits(frame, i, j);
+        if (fb === null) { row.push(""); continue; }   // outside the domain
         const t = classifyBits(fb.l, fb.t, fb.b, fb.r);
         row.push(t === "invalid" ? 0 : TYPE_CODE[t]);
       }
@@ -1131,6 +1166,12 @@
   function updateModelUI() {
     if (!modelSel) return;
     const stoch = modelSel.value === "stochastic";
+    const domain = modelSel.value === "domain";
+    const domParams = document.getElementById("domain-params");
+    const domNote = document.getElementById("domain-note");
+    if (domParams) domParams.style.display = domain ? "block" : "none";
+    if (domNote) domNote.style.display = domain ? "block" : "none";
+
     if (stochParams) stochParams.style.display = stoch ? "block" : "none";
     if (stochNote) stochNote.style.display = stoch ? "block" : "none";
     const badge = document.getElementById("mixing-badge");
@@ -1140,6 +1181,19 @@
     // The stochastic model has no chain, and the server sends an empty mask
     // for it, so that view would render the whole domain as frozen -- a
     // confident wrong picture. Take it off the menu instead.
+    // The subtitle names the boundary conditions, so it is wrong for any
+    // model but DWBC. It said "domain wall boundary conditions" while a
+    // general domain was on screen.
+    const sub = document.querySelector(".subtitle");
+    if (sub) {
+      if (!sub.dataset.dwbc) sub.dataset.dwbc = sub.innerHTML;
+      sub.innerHTML = domain
+        ? "six-vertex height-function sampler \u00b7 general domain (Gorin\u2013Kenyon)"
+        : stoch
+        ? "six-vertex height-function sampler \u00b7 stochastic, free exit"
+        : sub.dataset.dwbc;
+    }
+
     const activeOpt = document.querySelector('#viewmode option[value="active"]');
     if (activeOpt) {
       activeOpt.disabled = stoch;
@@ -1163,6 +1217,18 @@
                    "has free-exit boundary conditions and is sampled in one " +
                    "sweep, so there is no chain to run and no separate exact " +
                    "step. Switch the model selector back to use it.";
+      } else if (domain) {
+        // The in-browser Markov chain runs on a full square. Let loose on a
+        // general domain it would flip sites OUTSIDE the region and silently
+        // produce configurations that are not in the model, so the chain
+        // controls are off; this model is sampled server-side only.
+        //
+        // This case belongs HERE rather than in a second loop over the same
+        // buttons: an earlier version added one, and this block's `else`
+        // promptly re-enabled everything it had just disabled.
+        el.disabled = true;
+        el.title = "General domains are sampled server-side by exact CFTP. " +
+                   "Use \u201csample (exact)\u201d in the domain panel.";
       } else {
         el.title = "";
         if (id !== "btn-exact" && id !== "btn-fluct") el.disabled = false;
@@ -1184,7 +1250,108 @@
         `\u0394 = ${d.toFixed(3)}  (ferroelectric)`;
     }
   }
+
+  // ---------------------------------------------------------------- domains
+  // Gorin-Kenyon domains, k = l = 3 (arXiv:2408.14446 Section 2.1).
+  const DOMAIN_I = [[1, 1, 1], [0, 1, 1], [0, 0, 1]];   // a staircase to start
+
+  function buildDomainGrid() {
+    const grid = document.getElementById("domain-grid");
+    if (!grid || grid.dataset.built) return;
+    grid.dataset.built = "1";
+    // Rendered row-major as the user sees the domain: row v, column u. The
+    // server takes I indexed [column block][row block], so the transpose
+    // happens once, at the request, and is noted there.
+    for (let v = 0; v < 3; v++) {
+      for (let u = 0; u < 3; u++) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.setAttribute("aria-pressed", DOMAIN_I[u][v] ? "true" : "false");
+        b.setAttribute("aria-label", `block row ${v + 1}, column ${u + 1}`);
+        b.addEventListener("click", () => {
+          DOMAIN_I[u][v] = DOMAIN_I[u][v] ? 0 : 1;
+          b.setAttribute("aria-pressed", DOMAIN_I[u][v] ? "true" : "false");
+        });
+        grid.appendChild(b);
+      }
+    }
+  }
+
+  function parseCuts(text, n, label) {
+    const parts = String(text || "").split(/[,\s]+/).filter(Boolean).map(Number);
+    if (parts.length !== 2 || parts.some(v => !Number.isInteger(v))) {
+      throw new Error(`${label} needs exactly two whole numbers, e.g. "${Math.round(n / 3)}, ${Math.round(2 * n / 3)}"`);
+    }
+    if (!(0 < parts[0] && parts[0] < parts[1] && parts[1] < n)) {
+      throw new Error(`${label} must satisfy 0 < ${parts[0]} < ${parts[1]} < ${n}`);
+    }
+    return parts;
+  }
+
+  async function sampleDomain() {
+    const btn = document.getElementById("btn-domain");
+    const msg = document.getElementById("domain-msg");
+    const n = parseInt(nSlider.value, 10);
+    const w = currentWeights();
+    let xc, yc;
+    try {
+      const nx = document.getElementById("dom-xcuts").value;
+      const ny = document.getElementById("dom-ycuts").value;
+      xc = parseCuts(nx || `${Math.round(n / 3)},${Math.round(2 * n / 3)}`, n, "column cuts");
+      yc = parseCuts(ny || `${Math.round(n / 3)},${Math.round(2 * n / 3)}`, n, "row cuts");
+    } catch (e) {
+      msg.textContent = e.message;
+      return;
+    }
+    if (btn) btn.disabled = true;
+    msg.textContent = "sampling\u2026";
+    hudStatus.textContent = "exact sampling";
+    try {
+      const start = await fetch("/api/domain/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          n, c_up: w.c1, c_down: w.c2, a1: w.a1, a2: w.a2, b1: w.b1, b2: w.b2,
+          x_cuts: xc, y_cuts: yc, I: DOMAIN_I,
+        }),
+      });
+      const sd = await start.json();
+      if (!sd.ok) { msg.textContent = sd.error; return; }
+      for (let waited = 0; waited < 45 * 60; waited++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const st = await (await fetch(`/api/exact/status/${sd.job_id}`)).json();
+        if (!st.ok) { msg.textContent = `status check failed: ${st.error}`; return; }
+        if (st.status === "running") {
+          msg.textContent = st.last_T ? `coupling window ${st.last_T}\u2026` : "sampling\u2026";
+          continue;
+        }
+        if (st.status === "error") { msg.textContent = st.error; return; }
+        // Render the SERVER frame directly. Routing it through the local
+        // sampler, as the DWBC exact path does, would drop the domain mask
+        // (frames built from the in-browser chain are full squares) and the
+        // region would silently render as the whole square again.
+        const f = frameFromServerData(st.frame);
+        sampler = null;
+        renderFrame(f);
+        const inf = st.info || {};
+        msg.textContent = `exact sample (CFTP, coupling window ${inf.T})`;
+        return;
+      }
+      msg.textContent = "gave up waiting for the server";
+    } catch (e) {
+      msg.textContent = `request failed: ${e.message}`;
+    } finally {
+      if (btn) btn.disabled = false;
+      hudStatus.textContent = "ready";
+    }
+  }
+
   if (modelSel) modelSel.addEventListener("change", updateModelUI);
+  buildDomainGrid();
+  {
+    const db = document.getElementById("btn-domain");
+    if (db) db.addEventListener("click", sampleDomain);
+  }
   if (sb1) sb1.addEventListener("input", updateModelUI);
   if (sb2) sb2.addEventListener("input", updateModelUI);
   updateModelUI();
@@ -1419,6 +1586,7 @@
     if (viewMode.value === "active") {
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
+          if (!faceInDomain(lastFrame, i, j)) continue;
           const isActive = lastFrame.getActive(i, j) || lastFrame.getActive(i + 1, j) ||
                             lastFrame.getActive(i, j + 1) || lastFrame.getActive(i + 1, j + 1);
           const fill = isActive ? "#e8a05c" : "#141e2a";
@@ -1428,8 +1596,18 @@
     } else if (viewMode.value === "vertex6") {
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
-          const type = classifyFaceLocal(lastFrame.get(i, j), lastFrame.get(i, j + 1), lastFrame.get(i + 1, j), lastFrame.get(i + 1, j + 1));
-          const [r, g, b] = VERTEX6_COLORS[type];
+          // Same shared edge bits as the on-screen raster and the text
+          // export. This was the last site still classifying raw corner
+          // heights: that logic assumes adjacent heights differ by exactly
+          // +-1, which is false for the stochastic model, so the SVG export
+          // misread it long after the screen was fixed. It also fell through
+          // to "a1" for anything it could not classify, which is what hid
+          // the original bug.
+          const fb = faceBits(lastFrame, i, j);
+          if (fb === null) continue;         // outside the domain: draw nothing
+          const type = classifyBits(fb.l, fb.t, fb.b, fb.r);
+          const [r, g, b] = type === "invalid" ? [255, 0, 255]
+                                               : VERTEX6_COLORS[type];
           rects += `<rect x="${j * cell}" y="${i * cell}" width="${cell}" height="${cell}" fill="rgb(${r},${g},${b})"/>`;
         }
       }
@@ -1438,6 +1616,7 @@
       const span = Math.max(1, max - min);
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
+          if (!faceInDomain(lastFrame, i, j)) continue;
           const avg = (lastFrame.get(i, j) + lastFrame.get(i + 1, j) + lastFrame.get(i, j + 1) + lastFrame.get(i + 1, j + 1)) / 4;
           const t = (avg - min) / span;
           const [r, g, b] = colorFor(t);

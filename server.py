@@ -15,6 +15,7 @@ from sixvertex.cftp_exact import (cftp_sample as cftp_exact_sample,
                                   in_monotone_region)
 from sixvertex.exact import exact_sample, MAX_EXACT_N
 from sixvertex import stochastic as _stochastic
+from sixvertex import domains as _domains
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -462,6 +463,127 @@ def api_exact_start():
     )
     thread.start()
 
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+# ----------------------------------------------------------- general domains
+#
+# Gorin-Kenyon domains (arXiv:2408.14446, Section 2.1): the DWBC square with
+# parts removed, encoded by cut sequences X, Y and a k x l binary matrix I.
+# Fixed at k = l = 3 here, which is the size Gorin suggested starting from --
+# the interface for general k and l is the awkward part, not the algorithm.
+#
+# Server-side only, by CFTP. The browser's live Markov chain works on a square
+# grid; teaching it arbitrary domains is a much larger change than teaching
+# the exact sampler, and the exact path is where a new domain belongs anyway.
+
+DOMAIN_K = 3
+
+
+def _parse_domain(data, n):
+    """Cuts and I from the request, or a message saying what is wrong.
+
+    Every rejection here is a message the user can act on. In particular an
+    EMPTY domain is caught up front with domains.admits_configuration, which
+    answers in one relaxation pass -- without it the sampler would simply
+    never coalesce and the user would watch a progress bar forever.
+    """
+    def cuts(name):
+        raw = data.get(name)
+        if not isinstance(raw, list) or len(raw) != DOMAIN_K - 1:
+            raise ValueError(f"{name} must be a list of {DOMAIN_K - 1} cut positions")
+        vals = []
+        for v in raw:
+            try:
+                vals.append(int(v))
+            except (TypeError, ValueError):
+                raise ValueError(f"{name} entries must be integers")
+        out = [0] + vals + [n]
+        if any(b <= a for a, b in zip(out, out[1:])):
+            raise ValueError(f"{name} must be strictly increasing and inside 0..{n}"
+                             f" (got {out})")
+        return out
+
+    X, Y = cuts("x_cuts"), cuts("y_cuts")
+    raw = data.get("I")
+    if (not isinstance(raw, list) or len(raw) != DOMAIN_K
+            or any(not isinstance(r, list) or len(r) != DOMAIN_K for r in raw)):
+        raise ValueError(f"I must be a {DOMAIN_K}x{DOMAIN_K} array of 0/1")
+    I = [[1 if v else 0 for v in row] for row in raw]
+
+    try:
+        mask = _domains.domain_mask(X, Y, I)
+    except _domains.DomainError as e:
+        raise ValueError(str(e))
+    if not _domains.admits_configuration(mask):
+        raise ValueError(
+            "this domain carries no valid configuration -- about half of the "
+            "convex patterns do not, and whether one does depends on the cut "
+            "positions as well as on I. Try moving a cut or filling in a block.")
+    try:
+        _domains.check_monotone_precondition(mask)
+    except _domains.DomainError as e:
+        raise ValueError(str(e))
+    return X, Y, I, mask
+
+
+def _run_domain_job(job_id, mask, w, seed):
+    try:
+        H, info = _domains.cftp_sample(mask, w, master_seed=seed,
+                                       max_T=1 << 20)
+        n = mask.shape[0]
+        Hn = np.asarray(H, dtype=np.int16)
+        cm = _domains.corner_mask(mask)
+        frame = {
+            "n": int(n),
+            "height_b64": base64.b64encode(Hn.tobytes()).decode("ascii"),
+            "active_b64": base64.b64encode(
+                np.zeros((n + 1, n + 1), dtype=np.uint8).tobytes()).decode("ascii"),
+            "domain_b64": base64.b64encode(
+                mask.astype(np.uint8).tobytes()).decode("ascii"),
+            "min": float(Hn[cm].min()),
+            "max": float(Hn[cm].max()),
+        }
+        with _jobs_lock:
+            if job_id in _jobs:
+                _jobs[job_id].update(status="done", finished_at=time.time(),
+                                     frame=frame, info=info)
+    except Exception as e:
+        with _jobs_lock:
+            if job_id in _jobs:
+                _jobs[job_id].update(status="error", finished_at=time.time(),
+                                     error=str(e))
+
+
+@app.route("/api/domain/start", methods=["POST"])
+def api_domain_start():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        n, w, seed = _parse_request(data, n_min=6, n_max=160)
+        X, Y, I, mask = _parse_domain(data, n)
+    except (BadRequest, ValueError) as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    if not in_monotone_region(w):
+        A, B, C = w["a1"]*w["a2"], w["b1"]*w["b2"], w["c1"]*w["c2"]
+        return jsonify({"ok": False, "error":
+                        f"CFTP needs c1c2 >= a1a2 and c1c2 >= b1b2 "
+                        f"(here A={A:.4g}, B={B:.4g}, C={C:.4g}); outside that "
+                        f"region no monotone coupling of the update exists, so "
+                        f"there is no exact method to fall back on."}), 400
+
+    job_id = uuid.uuid4().hex
+    with _jobs_lock:
+        _cleanup_old_jobs()
+        running = sum(1 for j in _jobs.values() if j.get("status") == "running")
+        if running >= _MAX_CONCURRENT_JOBS:
+            return jsonify({"ok": False, "error":
+                            f"too many jobs running ({running}); try again "
+                            f"shortly"}), 429
+        _jobs[job_id] = {"status": "running", "created_at": time.time(),
+                         "last_T": None, "attempts": 0, "n": n}
+    threading.Thread(target=_run_domain_job,
+                     args=(job_id, mask, w, seed), daemon=True).start()
     return jsonify({"ok": True, "job_id": job_id})
 
 

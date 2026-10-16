@@ -113,6 +113,7 @@
             <select id="model">
               <option value="dwbc">six-vertex, domain wall (DWBC)</option>
               <option value="stochastic">stochastic six-vertex, free exit</option>
+              <option value="domain">six-vertex, general domain (k=&#8467;=3)</option>
             </select>
           </div>
           <p class="note" id="stochastic-note" style="display:none;">
@@ -121,6 +122,17 @@
             mixing time. &Delta; = (b&#8321;+b&#8322;)/(2&radic;(b&#8321;b&#8322;))
             &ge; 1 by AM&ndash;GM, so this covers the ferroelectric regime,
             which is the hardest one under DWBC.
+          </p>
+          <p class="note" id="domain-note" style="display:none;">
+            Gorin&ndash;Kenyon domains (arXiv:2408.14446 &sect;2.1): the DWBC
+            square with blocks removed. Cuts 0 &lt; X&#8321; &lt; X&#8322; &lt; N
+            and 0 &lt; Y&#8321; &lt; Y&#8322; &lt; N split it into a 3&times;3
+            grid of blocks; the matrix I says which are kept, and every row and
+            column of I must be a contiguous run. Sampled server-side by exact
+            CFTP. Roughly half of the valid-looking patterns carry no
+            configuration at all &mdash; whether one does depends on the cut
+            positions, not only on I &mdash; so the server checks and says so
+            rather than running forever.
           </p>
           <div class="field" id="stoch-params" style="display:none;">
             <label for="sb1">b&#8321; (turn probability)</label>
@@ -131,6 +143,16 @@
             <output id="sb2-out">0.70</output>
             <output id="stoch-delta" style="display:block;margin-top:0.4em;"></output>
             <button id="btn-stoch" class="exact" style="margin-top:0.5em;">sample (exact)</button>
+          </div>
+          <div class="field" id="domain-params" style="display:none;">
+            <label>blocks kept (I)</label>
+            <div id="domain-grid" class="domain-grid"></div>
+            <label for="dom-xcuts">column cuts X&#8321;, X&#8322;</label>
+            <input type="text" id="dom-xcuts" value="" placeholder="e.g. 16, 32" />
+            <label for="dom-ycuts">row cuts Y&#8321;, Y&#8322;</label>
+            <input type="text" id="dom-ycuts" value="" placeholder="e.g. 16, 32" />
+            <output id="domain-msg" style="display:block;margin-top:0.4em;"></output>
+            <button id="btn-domain" class="exact" style="margin-top:0.5em;">sample (exact)</button>
           </div>
           <div class="row">
             <button id="btn-init">reset</button>
@@ -286,6 +308,6 @@
   });
 </script>
 <script src="sixvertex.js?v=1"></script>
-<script src="draw.js?v=48"></script>
+<script src="draw.js?v=49"></script>
 </body>
 </html>

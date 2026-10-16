@@ -109,6 +109,31 @@ EXTREME_HI = {k: 3.0 for k in UNIFORM}
 # Tests
 # --------------------------------------------------------------------------
 
+
+def _js_function_body(code, name):
+    """The whole body of a JS function, by brace matching.
+
+    Several tests used to slice a fixed number of characters after the
+    function's name. That silently truncates as soon as the function grows,
+    and a truncated window is how a bug hides: the assertion still passes
+    because the code it should have examined is simply not in the slice.
+    Adding one branch to updateModelUI pushed the line two tests were written
+    to check straight out of their 1800-character windows.
+    """
+    k = code.index(name)
+    k = code.index("{", k)
+    depth, i = 0, k
+    while i < len(code):
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return code[k:i + 1]
+        i += 1
+    raise AssertionError(f"unbalanced braces after {name!r}")
+
+
 def test_asm_counts():
     """At the ice point the partition function is the ASM count."""
     expected = {1: 1, 2: 2, 3: 7, 4: 42, 5: 429}
@@ -1590,8 +1615,16 @@ def test_colour_classifier_uses_the_corrected_convention():
     import os
     here = os.path.dirname(__file__)
     js = open(os.path.join(here, "..", "static", "draw.js")).read()
-    start = js.index("function classifyFaceLocal")
-    body = js[start:start + 900]
+    # classifyFaceLocal, the classifier this test was written against, has
+    # been REMOVED. It was a second copy of the convention kept only for the
+    # SVG export, it classified raw corner heights (wrong for the stochastic
+    # model), and it fell through to "a1" for anything it could not place.
+    # Everything now goes through classifyBits, so that is what must carry
+    # the corrected labels -- and there is no second copy left to drift.
+    assert "classifyFaceLocal" not in js, (
+        "the duplicate rendering classifier is back; it is where the b/c "
+        "label fix was missed once already")
+    body = _js_function_body(js, "function classifyBits")
     code = "\n".join(ln for ln in body.splitlines()
                      if not ln.strip().startswith("//"))
     assert 'if (l && t && !b && !r) return "c1"' in code, (
@@ -1739,8 +1772,7 @@ def test_model_switch_disables_rather_than_hides_and_restores_the_chain():
     code = "\n".join(ln for ln in js.splitlines()
                      if not ln.strip().startswith("//"))
 
-    start = code.index("function updateModelUI")
-    body = code[start:start + 1800]
+    body = _js_function_body(code, "function updateModelUI")
     assert 'el.style.display = "";' in body, (
         "DWBC controls are hidden on model switch; disable them with a reason "
         "instead so the tool does not look like it lost features")
@@ -1975,8 +2007,7 @@ def test_model_switch_disables_every_dwbc_control():
         "no single source of truth for which model is selected")
 
     # every DWBC control, reset included
-    start = code.index("function updateModelUI")
-    body = code[start:start + 1800]
+    body = _js_function_body(code, "function updateModelUI")
     for btn in ("btn-init", "btn-play", "btn-step", "btn-exact", "btn-fluct"):
         assert btn in body, f"{btn} is not disabled when the model switches"
 
@@ -2019,15 +2050,35 @@ def test_all_views_read_the_arrows_for_the_stochastic_model():
         "an unclassifiable face still falls through to a valid type; that is "
         "what hid this bug")
 
-    # the coloured raster must go through the shared helper, not the
-    # height-only classifier
-    i = code.index('mode === "vertex6"')
-    branch = code[i:i + 700]
-    assert "faceBits(frame, i, j)" in branch, (
-        "the coloured-vertex view does not use the shared edge bits, so it "
-        "will misread the stochastic model again")
-    assert "classifyFaceLocal(" not in branch, (
-        "the coloured-vertex view still classifies raw heights")
+    # EVERY vertex6 branch, not just the first. The original version of this
+    # test took code.index('mode === "vertex6"') -- the on-screen raster --
+    # and stopped. The SVG export's branch reads `viewMode.value ===
+    # "vertex6"`, a different string, so the test never looked at it, and the
+    # export went on classifying raw corner heights for weeks after the
+    # screen was fixed. Checking one call site is how this bug survived twice.
+    import re
+    sites = [m.start() for m in re.finditer(r'vertex6"\)?\s*\{', code)]
+    sites += [m.start() for m in re.finditer(r'=== "vertex6"', code)]
+    # A RENDERING branch is one that unpacks a colour to paint with; the
+    # colour-picker code also mentions VERTEX6_COLORS but paints nothing, and
+    # keying on the name alone picked it up as a false positive.
+    rendering = [k for k in sites if "const [r, g, b] =" in code[k:k + 900]]
+    assert len(rendering) >= 2, (
+        f"expected at least two rendering branches (screen and SVG export), "
+        f"found {len(rendering)}")
+    for k in rendering:
+        branch = code[k:k + 900]
+        assert "faceBits(" in branch, (
+            "a vertex6 rendering branch does not use the shared edge bits, "
+            "so it will misread the stochastic model: " + branch[:160])
+        assert "invalid" in branch, (
+            "a vertex6 rendering branch has no invalid case, so an "
+            "unclassifiable face will masquerade as a valid type")
+
+    # and there must be no height-only classifier left to misuse
+    assert "classifyFaceLocal" not in code, (
+        "the height-only classifier is back; it assumes adjacent heights "
+        "differ by exactly +-1, which the stochastic model violates")
 
     # and the path view must use the same helper rather than its own copy
     j = code.index("function drawPaths")
@@ -2893,3 +2944,96 @@ def test_island_width_differs_between_domains_with_clean_separation():
     diff = float(a["R_lo"]) - float(b["R_lo"])
     se = float(np.hypot(float(a["se_lo"]), float(b["se_lo"])))
     assert diff / se > 5, (diff, se)
+
+
+def test_every_renderer_respects_the_domain_mask():
+    """General domains: cells outside the region must never be drawn.
+
+    The guard lives in one helper, faceInDomain, next to the shared edge
+    bits -- for the same reason faceBits exists. A per-call-site check is how
+    the stochastic mislabelling survived three rounds of fixes, and this
+    model has the same shape of risk: six places paint cells, and any one of
+    them left unguarded renders the removed blocks as if they were part of
+    the model.
+    """
+    import os
+    import re
+
+    here = os.path.dirname(__file__)
+    code = "\n".join(
+        ln for ln in open(os.path.join(here, "..", "static", "draw.js")).read().splitlines()
+        if not ln.strip().startswith("//"))
+
+    assert "function faceInDomain" in code
+    assert "if (!faceInDomain(frame, i, j)) return null;" in code, (
+        "faceBits does not short-circuit outside the domain, so every view "
+        "that reads edge bits will paint cells that are not in the model")
+
+    # every consumer of faceBits must handle the null
+    uses = [m.start() for m in re.finditer(r"= faceBits\(", code)]
+    assert len(uses) >= 4, f"expected >=4 faceBits consumers, found {len(uses)}"
+    for k in uses:
+        window = code[k:k + 420]
+        assert "=== null" in window, (
+            "a faceBits consumer does not handle the outside-domain case: "
+            + window[:140])
+
+    # and the two renderers that never call faceBits need the guard directly
+    for marker in ("const isActive = frame.getActive(i, j)",
+                   "const avg = (frame.get(i, j)"):
+        k = code.index(marker)
+        assert "faceInDomain" in code[max(0, k - 400):k], (
+            f"renderer at {marker!r} has no domain guard")
+
+
+def test_general_domain_endpoint_refuses_what_it_should():
+    """The server answers with something the user can act on.
+
+    An empty domain is the important one: without the up-front check the
+    sampler would simply never coalesce and the user would watch a progress
+    bar forever. admits_configuration answers in one relaxation pass.
+    """
+    import server
+
+    c = server.app.test_client()
+    base = dict(n=12, a1=1, a2=1, b1=1, b2=1, c_up=2.0, c_down=2.0, seed=1,
+                x_cuts=[3, 6], y_cuts=[3, 6])
+
+    def post(**kw):
+        d = dict(base)
+        d.update(kw)
+        r = c.post("/api/domain/start", json=d)
+        return r.status_code, (r.get_json() or {})
+
+    code, body = post(I=[[1, 0, 1], [1, 1, 1], [1, 1, 1]])
+    assert code == 400 and "convex" in body["error"], body
+
+    code, body = post(I=[[1, 1, 1], [1, 1, 1], [1, 0, 0]])
+    assert code == 400 and "no valid configuration" in body["error"], body
+
+    code, body = post(x_cuts=[6, 3], I=[[1, 1, 1], [1, 1, 1], [1, 1, 1]])
+    assert code == 400 and "increasing" in body["error"], body
+
+    # outside the monotone region there is no exact method to fall back on
+    code, body = post(c_up=0.5, c_down=0.5, I=[[1, 1, 1], [0, 1, 1], [0, 0, 1]])
+    assert code == 400 and "monotone" in body["error"], body
+
+    # and a legal one starts
+    code, body = post(I=[[1, 1, 1], [0, 1, 1], [0, 0, 1]])
+    assert code == 200 and body.get("ok"), body
+
+
+def test_general_domain_sampler_accepts_a_missing_seed():
+    """Omitting the seed must not reach numpy as SeedSequence([None]).
+
+    It did: the request surfaced to the user as "int() argument must be a
+    string, a bytes-like object or a real number, not 'NoneType'". The DWBC
+    sampler had always handled this; this one had not.
+    """
+    from sixvertex.domains import cftp_sample, domain_mask
+
+    m = domain_mask([0, 4, 8, 12], [0, 4, 8, 12],
+                    [[1, 1, 1], [0, 1, 1], [0, 0, 1]])
+    H, info = cftp_sample(m, dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0,
+                                  c1=2.0, c2=2.0), master_seed=None)
+    assert isinstance(info["master_seed"], int)

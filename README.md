@@ -312,6 +312,25 @@ ferroelectric regime, which is the hardest one under DWBC.
 immediately. Long computations must not sit on an open HTTP request.
 Returns `429` if `_MAX_CONCURRENT_JOBS` are already running.
 
+**`POST /api/domain/start`** — exact sampling on a general
+Gorin–Kenyon domain (arXiv:2408.14446 §2.1): the DWBC square with blocks
+removed. Body: `n`, the six weights, optional `seed`, plus `x_cuts` and
+`y_cuts` (two interior cut positions each) and `I` (a 3×3 array of 0/1
+saying which blocks are kept). Returns `job_id`; poll
+`/api/exact/status/<job_id>` as for `/api/exact/start`, and the frame
+carries an extra `domain_b64` mask of `n²` bytes marking which cells belong
+to the region.
+
+Fixed at `k = l = 3`, which is where Gorin suggested starting: the awkward
+part for general `k` and `l` is the interface, not the algorithm. Rejections
+are specific and up-front — a non-convex `I`, cuts that are not strictly
+increasing, weights outside the monotone region where no exact method
+exists, and in particular a domain that carries **no configuration at all**.
+That last one matters: roughly half of the convex patterns are empty, and
+whether a given one is depends on the cut positions as well as on `I`, so
+the server decides it in one relaxation pass rather than letting CFTP spin
+forever.
+
 **`GET /api/exact/status/<job_id>`** — poll. `status` is
 `running` | `done` | `error`. On `done` the body carries `frame` and `info`
 (`info.method` is `exact-sequential` or `cftp`). Jobs stuck in `running`

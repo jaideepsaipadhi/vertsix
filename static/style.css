@@ -520,3 +520,24 @@ button.exact:disabled {
      sampling section sits above the parameters so the actions stay reachable */
   .row { gap: 0.5em; }
 }
+
+/* 3x3 block picker for general domains (Gorin-Kenyon) */
+.domain-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  width: 84px;
+  margin: 0.3em 0 0.6em;
+}
+.domain-grid button {
+  aspect-ratio: 1;
+  padding: 0;
+  min-width: 0;
+  border: 1px solid var(--line, #2a3442);
+  background: transparent;
+  cursor: pointer;
+}
+.domain-grid button[aria-pressed="true"] {
+  background: var(--accent, #e8a05c);
+  border-color: var(--accent, #e8a05c);
+}
