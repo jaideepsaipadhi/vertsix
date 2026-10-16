@@ -2079,6 +2079,49 @@ def test_stochastic_arrows_give_all_six_vertex_types():
             f"n={n}: expected all six vertex types, saw {sorted(counts)}")
 
 
+def test_experiment_observables_are_pinned():
+    """The two measurement campaigns depend on choices that were made from
+    data, not from taste, and that a later edit could silently undo.
+
+    Coalescence: the quantity is the FORWARD coupling time, not the number
+    CFTP prints. CFTP's is the first window of a doubling schedule, so it is
+    quantised to powers of two -- at n=16 it read 256 at Delta = +0.5, 0, -1,
+    -2 and -3 alike, a staircase hiding the whole dependence.
+
+    Island: the component is 8-connected. Measured at n=48 over 60 samples,
+    4-connectivity separated the island from the runner-up by a median 3.6x
+    and left 8% of samples ambiguous, and the largest-plateau definition left
+    43% ambiguous; 8-connectivity separated by 50x and left none. The level is
+    the modal parity-corrected height, which agreed with the independent
+    plateau definition in 90-97% of samples.
+    """
+    import os
+    here = os.path.dirname(__file__)
+    exp = os.path.join(here, "..", "experiments")
+    if not os.path.isdir(exp):
+        return
+
+    mixing = open(os.path.join(exp, "mixing.py")).read()
+    isl = open(os.path.join(exp, "island.py")).read()
+
+    assert "def forward_coalescence_time" in mixing, (
+        "the coalescence observable is gone; CFTP's own T is quantised to "
+        "powers of two and cannot resolve the Delta dependence")
+    assert "in_monotone_region" in mixing, (
+        "coalescence time is only defined where the coupling is monotone")
+
+    assert "connectivity=8" in isl, (
+        "the island must default to 8-connectivity; 4-connectivity and the "
+        "plateau definition both leave a large fraction of samples ambiguous")
+    assert "np.ones((3, 3))" in isl, "8-connectivity structure is missing"
+    assert "(i + j) & 1" in isl, (
+        "the parity correction is gone; the raw height alternates inside the "
+        "island, so its level is only constant after removing the checkerboard")
+    # the lattice spacing is 2, so the centred variable is halved
+    assert "/ 2" in isl.split("def island")[1][:1600], (
+        "k must be (level - n/2)/2; neighbouring plateaus differ by 2, not 1")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
@@ -2091,3 +2134,762 @@ if __name__ == "__main__":
             print(f"FAIL  {t.__name__}: {e}")
     print(f"\n{len(tests)-failed}/{len(tests)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_island_shift_summary_is_identifiable_only_with_three_cells():
+    """The (mu, sigma) fit needs three populated cells; with two it is a ridge.
+
+    This pins the guard added after an n=24 run reported sigma=0.208 with a
+    bootstrap interval of width 0.006 -- not precision, but a degenerate MLE
+    on a two-cell histogram that happened to draw zero in a cell with
+    expected count 3.
+    """
+    import numpy as np
+    from experiments.island import discrete_gaussian_fit
+
+    two_cell = [0.0] * 1650 + [-1.0] * 350
+    fit = discrete_gaussian_fit(two_cell)
+    assert fit["n_cells_used"] < 3, (
+        "a two-cell histogram must not report enough cells to test a shape")
+
+    three_cell = two_cell + [1.0] * 400
+    assert discrete_gaussian_fit(three_cell)["n_cells_used"] >= 3
+
+
+def test_island_neighbour_ratio_is_stable_across_lattice_size():
+    """P(k=-1)/P(k=0) is the quantity that is actually measured.
+
+    Unlike mu and sigma it needs only the two populated cells, and a discrete
+    Gaussian with variance bounded in n predicts it does not drift with n.
+    Measured at Delta=-3: 0.212 (n=16), 0.210 (n=24), 0.222 (n=32).
+    """
+    from collections import Counter
+
+    from sixvertex.cftp_exact import cftp_sample
+    from experiments.island import island
+    from experiments.mixing import weights_for_delta
+
+    w = weights_for_delta(-3.0)
+    ratios = []
+    for n in (16, 24):
+        ks = [island(cftp_sample(n, w, master_seed=4_100_000 + s)[0], n)["k"]
+              for s in range(250)]
+        c = Counter(k for k in ks if k is not None)
+        mode = max(c, key=c.get)
+        ratios.append(c.get(mode - 1, 0) / c[mode])
+
+    assert all(0.10 < r < 0.40 for r in ratios), ratios
+    assert abs(ratios[0] - ratios[1]) < 0.15, ratios
+
+
+def test_island_distribution_is_one_sided():
+    """The island sits one level low often and one level high almost never.
+
+    P(+1)/P(0) ~ 1.5e-3 against P(-1)/P(0) ~ 0.21, a factor of ~140. Any
+    change that symmetrises this has broken either the parity correction or
+    the component selection.
+    """
+    from collections import Counter
+
+    from sixvertex.cftp_exact import cftp_sample
+    from experiments.island import island
+    from experiments.mixing import weights_for_delta
+
+    w = weights_for_delta(-3.0)
+    ks = [island(cftp_sample(32, w, master_seed=4_200_000 + s)[0], 32)["k"]
+          for s in range(300)]
+    c = Counter(k for k in ks if k is not None)
+    mode = max(c, key=c.get)
+    assert c.get(mode - 1, 0) > 20, dict(c)
+    assert c.get(mode + 1, 0) <= 5, dict(c)
+
+
+def test_the_site_credits_gorin():
+    """Gorin asked for this line explicitly, in his own wording.
+
+    A test rather than a one-off edit because the header markup has been
+    rewritten several times and a credit that silently disappears is worse
+    than one that was never added.
+    """
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    html = open(os.path.join(root, "static", "index.html")).read()
+    css = open(os.path.join(root, "static", "style.css")).read()
+    assert "proposed by Vadim Gorin" in html
+    assert 'class="credit"' in html
+    assert ".credit {" in css, "the credit line must be styled, not default text"
+
+
+def test_local_exponent_recovers_a_known_power_law():
+    """Known-answer test for the asymptotics observable.
+
+    A rising local exponent is the whole claim in experiments/run_asymptotics,
+    so the estimator has to return a FLAT exponent on data that really is a
+    power law, and a rising one on data that really is not. Both directions
+    are checked, because an estimator biased upward would manufacture the
+    result.
+    """
+    import numpy as np
+
+    ns = np.array([32, 40, 48, 56, 64, 80], float)
+
+    def local(t):
+        return np.log(t[1:] / t[:-1]) / np.log(ns[1:] / ns[:-1])
+
+    flat = local(7.0 * ns ** 3)
+    assert np.allclose(flat, 3.0), flat
+
+    # exp(n/20) is superpolynomial: the local exponent must climb
+    rising = local(np.exp(ns / 20))
+    assert np.all(np.diff(rising) > 0), rising
+    assert rising[-1] > 1.8 * rising[0], rising
+
+
+def test_delta_minus_four_coalescence_exceeds_its_own_low_n_power_law():
+    """Pins the measured departure, at a size that still runs in seconds.
+
+    Fitting tau ~ n^alpha on n=16..32 at Delta=-4 and extending to n=48
+    under-predicts the measured time. The same construction at Delta=-1 does
+    not, which is why the control is part of the test rather than a footnote.
+    """
+    import numpy as np
+
+    from experiments.mixing import forward_coalescence_time, weights_for_delta
+
+    def med(n, d, k=9):
+        w = weights_for_delta(d)
+        return float(np.median([forward_coalescence_time(n, w, seed=5_000 + s)
+                                for s in range(k)]))
+
+    ratios = {}
+    for d in (-4.0, -1.0):
+        a, b, c = med(16, d), med(32, d), med(48, d)
+        alpha = np.log(b / a) / np.log(2.0)
+        ratios[d] = c / (b * (48 / 32) ** alpha)
+
+    assert ratios[-4.0] > 1.10, ratios
+    assert ratios[-4.0] > ratios[-1.0], ratios
+
+
+# ------------------------------------------------- general domains (2408.14446)
+def test_general_domain_reduces_to_dwbc_exactly():
+    """The gate for the whole general-domain module.
+
+    k = l = 1 with I = [[1]] IS domain wall boundary conditions, so the
+    general code must reproduce the DWBC extremal heights bit for bit. The
+    conventions here (which edge of a face is l, t, b, r, and which boundary
+    edges carry paths) were read off the DWBC code rather than re-derived,
+    precisely because an independently derived convention was silently wrong
+    once before.
+    """
+    import numpy as np
+
+    from sixvertex.cftp_exact import extremal_height
+    from sixvertex.domains import domain_mask, extremal_heights
+
+    for n in (1, 2, 3, 4, 5, 6, 8, 12):
+        lo, hi = extremal_heights(domain_mask([0, n], [0, n], [[1]]))
+        assert np.array_equal(lo, extremal_height(n, "lo").astype(np.int64)), n
+        assert np.array_equal(hi, extremal_height(n, "hi").astype(np.int64)), n
+
+
+def test_two_independent_enumerators_agree_on_general_domains():
+    """Heights and edges are counted by code sharing nothing but the mask.
+
+    The height route goes through boundary propagation and the height
+    convention; the edge route assigns 0/1 to lattice edges and only checks
+    each cell against the six legal vertices. They disagreed once -- the
+    height enumerator visited corners in row-major order and guessed a value
+    at corners with no fixed neighbour yet, over-counting 5 configurations as
+    2604. A square never exposes that, which is why the check runs on
+    staircases too.
+    """
+    from sixvertex.domains import domain_mask
+    from experiments.brute_domain import (enumerate_edge_configs,
+                                          enumerate_heights)
+
+    cases = [([0, 3], [0, 3], [[1]], 7),
+             ([0, 4], [0, 4], [[1]], 42),
+             ([0, 5], [0, 5], [[1]], 429),
+             ([0, 1, 2, 4], [0, 1, 2, 4], [[1, 1, 1], [0, 1, 1], [0, 0, 1]], None),
+             ([0, 1, 3, 4], [0, 2, 3, 4], [[0, 1, 0], [1, 1, 1], [0, 1, 0]], 4)]
+    for X, Y, I, expected in cases:
+        m = domain_mask(X, Y, I)
+        e = enumerate_edge_configs(m)
+        h = len(enumerate_heights(m))
+        assert e == h, (X, Y, I, e, h)
+        if expected is not None:
+            assert e == expected, (X, Y, I, e, expected)
+
+
+def test_convexity_of_I_does_not_imply_the_domain_is_nonempty():
+    """Roughly half of the convex patterns admit no configuration at all.
+
+    Measured over all 98 convex 3x3 patterns at N=4: 46 samplable, 49 with
+    zero configurations, 3 whose corner graph is disconnected. This is a
+    property of the model, not a bug, and it is pinned because an empty domain
+    must keep being refused rather than silently sampled.
+    """
+    from sixvertex.domains import domain_mask, extremal_heights, DomainError
+    from experiments.brute_domain import enumerate_edge_configs
+
+    empty = [[1, 1, 1], [1, 1, 1], [1, 0, 0]]
+    m = domain_mask([0, 1, 2, 4], [0, 1, 2, 4], empty)
+    assert enumerate_edge_configs(m) == 0
+    try:
+        extremal_heights(m)
+        raise AssertionError("an empty domain must be refused, not sampled")
+    except DomainError:
+        pass
+
+
+def test_a_permutation_inside_the_domain_is_not_necessary():
+    """Counterexample to the obvious characterisation, kept as a test.
+
+    A configuration with exactly N corners is a permutation matrix supported
+    in the domain, so it was natural to guess that the domain is nonempty iff
+    the mask has a perfect matching. Sufficient in all 686 domains tested,
+    but NOT necessary: this plus-shaped domain has three rows confined to two
+    columns, so Hall's condition fails, yet it carries 4 configurations --
+    every one of them with more than N corners.
+    """
+    import numpy as np
+    from scipy.optimize import linear_sum_assignment
+
+    from sixvertex.domains import domain_mask
+    from experiments.brute_domain import enumerate_edge_configs
+
+    m = domain_mask([0, 1, 3, 4], [0, 2, 3, 4],
+                    [[0, 1, 0], [1, 1, 1], [0, 1, 0]])
+    cost = np.where(m, 0.0, 1.0)
+    r, c = linear_sum_assignment(cost)
+    assert cost[r, c].sum() > 0, "expected no perfect matching"
+    assert enumerate_edge_configs(m) == 4
+
+
+def test_general_domain_sampler_is_exact_on_the_square():
+    """The general-domain CFTP against the enumerated law, at c != 1.
+
+    Run on the square so the answer is independently known; the staircase
+    version of this check lives in experiments/validate_domains.py, which is
+    too slow for the suite.
+    """
+    import numpy as np
+
+    from sixvertex.domains import cftp_sample, classify_counts, domain_mask
+    from experiments.brute_domain import enumerate_heights
+
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=2.0, c2=2.0)
+    m = domain_mask([0, 4], [0, 4], [[1]])
+    hs = enumerate_heights(m)
+    wt = []
+    for H in hs:
+        x = 1.0
+        for k, v in classify_counts(H, m).items():
+            x *= w[k] ** v
+        wt.append(x)
+    exact = np.array(wt) / sum(wt)
+
+    key = {H.tobytes(): i for i, H in enumerate(hs)}
+    N = 1500
+    cnt = np.zeros(len(hs))
+    for s in range(N):
+        H, _ = cftp_sample(m, w, master_seed=910_000 + s)
+        cnt[key[np.ascontiguousarray(H).tobytes()]] += 1
+    dev = float(np.max(np.abs(cnt / N - exact)))
+    assert dev < 3 / np.sqrt(N), dev
+
+
+def test_general_domain_sampler_is_exact_on_a_staircase():
+    """Exactness on a domain that is not a rectangle.
+
+    Also a regression test for a failure that looked like bad mixing and was
+    not: extremal_heights left +-1e9 sentinels on corners outside the domain,
+    and cftp_sample compared whole arrays, so -1e9 was tested against +1e9
+    forever. The chains were in fact coalescing after a single sweep while the
+    sampler reported "no coalescence by T=2^20".
+    """
+    import numpy as np
+
+    from sixvertex.domains import cftp_sample, classify_counts, domain_mask
+    from experiments.brute_domain import enumerate_heights
+
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.6, c2=1.6)
+    m = domain_mask([0, 2, 4, 6], [0, 2, 4, 6], [[1, 1, 1], [0, 1, 1], [0, 0, 1]])
+    hs = enumerate_heights(m)
+    assert len(hs) == 8
+
+    wt = []
+    for H in hs:
+        x = 1.0
+        for k, v in classify_counts(H, m).items():
+            x *= w[k] ** v
+        wt.append(x)
+    exact = np.array(wt) / sum(wt)
+
+    key = {H.tobytes(): i for i, H in enumerate(hs)}
+    N = 2000
+    cnt = np.zeros(len(hs))
+    for s in range(N):
+        H, info = cftp_sample(m, w, master_seed=930_000 + s)
+        assert info["T"] < 1 << 20, "coalescence must not run away here"
+        cnt[key[np.ascontiguousarray(H).tobytes()]] += 1
+    dev = float(np.max(np.abs(cnt / N - exact)))
+    assert dev < 3 / np.sqrt(N), dev
+
+
+def test_extremal_heights_leave_no_sentinels():
+    """Corners outside the domain must not carry +-1e9 into anything."""
+    import numpy as np
+
+    from sixvertex.domains import corner_mask, domain_mask, extremal_heights
+
+    m = domain_mask([0, 2, 4, 6], [0, 2, 4, 6], [[0, 1, 0], [1, 1, 1], [0, 1, 0]])
+    lo, hi = extremal_heights(m)
+    cm = corner_mask(m)
+    assert np.all(np.abs(lo[~cm]) < 100) and np.all(np.abs(hi[~cm]) < 100)
+    assert np.all(hi[cm] >= lo[cm])
+
+
+def test_existence_criterion_matches_exhaustive_enumeration():
+    """The polynomial-time nonemptiness test against ground truth.
+
+    Spot-checks of the 1364-domain sweep in which admits_configuration and
+    exhaustive edge enumeration agreed everywhere, including cases where two
+    earlier versions of the criterion failed in opposite directions: one
+    accepted empty domains whose disconnected pieces were never checked, the
+    other rejected nonempty disconnected domains outright.
+    """
+    from sixvertex.domains import admits_configuration, domain_mask
+    from experiments.brute_domain import enumerate_edge_configs
+
+    cases = [
+        ([0, 4], [0, 4], [[1]]),
+        ([0, 1, 2, 4], [0, 1, 2, 4], [[1, 1, 1], [1, 1, 1], [1, 0, 0]]),
+        ([0, 1, 2, 4], [0, 1, 2, 4], [[1, 1, 1], [0, 1, 1], [0, 0, 1]]),
+        ([0, 1, 3, 4], [0, 2, 3, 4], [[0, 1, 0], [1, 1, 1], [0, 1, 0]]),
+        ([0, 1, 2, 4], [0, 1, 2, 4], [[1, 0, 0], [0, 0, 1], [0, 1, 0]]),
+        ([0, 1, 2, 4], [0, 1, 2, 4], [[1, 0, 0], [0, 0, 1], [0, 1, 1]]),
+        ([0, 2, 4, 6], [0, 2, 4, 6], [[0, 0, 1], [1, 0, 0], [0, 1, 0]]),
+        ([0, 1, 2, 3], [0, 1, 2, 3], [[0, 0, 1], [1, 0, 0], [1, 1, 0]]),
+    ]
+    for X, Y, I in cases:
+        m = domain_mask(X, Y, I)
+        assert admits_configuration(m) == (enumerate_edge_configs(m) > 0), (X, Y, I)
+
+
+def test_nonemptiness_depends_on_the_cuts_not_only_on_I():
+    """I alone does not decide it -- 91 of 98 convex patterns flip with cuts.
+
+    Worth pinning because the natural reading of Section 2.1 is that I
+    describes the domain, and any characterisation phrased in terms of I
+    alone is therefore doomed.
+    """
+    from sixvertex.domains import admits_configuration, domain_mask
+
+    I = [[0, 0, 1], [1, 0, 0], [0, 1, 0]]
+    a = admits_configuration(domain_mask([0, 2, 4, 6], [0, 2, 4, 6], I))
+    b = admits_configuration(domain_mask([0, 1, 2, 4], [0, 1, 2, 4], I))
+    assert a != b, (a, b)
+
+
+def test_existence_criterion_scales_past_enumeration():
+    """Polynomial where enumeration is hopeless: N=240 in well under a second.
+
+    The all-pairs form of the same test took 68 seconds here; the
+    multi-source form is one relaxation pass.
+    """
+    import time
+
+    from sixvertex.domains import admits_configuration, domain_mask
+
+    N = 240
+    c = [0, N // 3, 2 * N // 3, N]
+    m = domain_mask(c, c, [[1, 1, 1], [0, 1, 1], [0, 0, 1]])
+    t0 = time.time()
+    assert admits_configuration(m) is True
+    assert time.time() - t0 < 5.0
+
+
+def test_only_degree_four_free_corners_are_sampled():
+    """The monotone-coupling precondition is enforced, not assumed.
+
+    CFTP is exact only because the coupling is monotone, and the condition
+    c1c2 >= a1a2, c1c2 >= b1b2 was derived for a corner surrounded by four
+    faces -- the only kind a square has. General domains do produce free
+    corners of degree 1, 2 and 3 (122 of 1635 across a 213-domain scan), and
+    at those the derivation does not apply. Every domain the sampler accepts
+    turned out to have only degree-4 free corners anyway, but that is a
+    finite observation, so it is checked rather than relied on.
+    """
+    import itertools
+
+    import numpy as np
+
+    from sixvertex.domains import (DomainError, _faces_of_corner,
+                                   admits_configuration, cftp_sample,
+                                   domain_mask, free_corners)
+
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.6, c2=1.6)
+    checked = 0
+    for bits in itertools.product([0, 1], repeat=9):
+        I = np.array(bits).reshape(3, 3)
+        if I.sum() == 0:
+            continue
+        for cuts in ([0, 1, 2, 4], [0, 2, 4, 6]):
+            try:
+                m = domain_mask(cuts, cuts, I)
+            except DomainError:
+                continue
+            if not admits_configuration(m):
+                continue
+            degs = [len(_faces_of_corner(m, int(i), int(j)))
+                    for (i, j) in map(tuple, np.argwhere(free_corners(m)))]
+            try:
+                cftp_sample(m, w, master_seed=0)
+                accepted = True
+            except DomainError:
+                accepted = False
+            if accepted:
+                assert all(d == 4 for d in degs), (cuts, I.tolist(), degs)
+                checked += 1
+    assert checked > 50, checked
+
+
+def test_the_two_samplers_agree_on_the_square():
+    """DWBC sampler vs general-domain sampler, same law, no shared code.
+
+    Different sweeps, different random streams, different extremal-height
+    construction. Both are also compared against the enumerated law so a
+    shared error would still show.
+
+    The comparison is a 2 x k test of HOMOGENEITY. An earlier version fed one
+    sampler's random counts in as chi-square "expected" values; that carries
+    about twice the variance it assumes, and it reported p=0.001 for two
+    samplers that were each matching the exact law to within 0.005.
+    """
+    import numpy as np
+    from scipy.stats import chi2_contingency
+
+    from sixvertex.cftp_exact import cftp_sample as dwbc_sample
+    from sixvertex.domains import (classify_counts, cftp_sample as dom_sample,
+                                   domain_mask)
+    from experiments.brute_domain import enumerate_heights
+
+    n = 4
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=2.0, c2=2.0)
+    m = domain_mask([0, n], [0, n], [[1]])
+    hs = enumerate_heights(m)
+    wt = []
+    for H in hs:
+        x = 1.0
+        for k, v in classify_counts(H, m).items():
+            x *= w[k] ** v
+        wt.append(x)
+    exact = np.array(wt) / sum(wt)
+    key = {H.astype(np.int64).tobytes(): i for i, H in enumerate(hs)}
+
+    N = 2500
+    cA = np.zeros(len(hs))
+    cB = np.zeros(len(hs))
+    for s in range(N):
+        H, _ = dwbc_sample(n, w, master_seed=640_000 + s)
+        cA[key[np.asarray(H, dtype=np.int64).tobytes()]] += 1
+        G, _ = dom_sample(m, w, master_seed=740_000 + s)
+        cB[key[np.ascontiguousarray(G, dtype=np.int64).tobytes()]] += 1
+
+    assert np.max(np.abs(cA / N - exact)) < 3 / np.sqrt(N)
+    assert np.max(np.abs(cB / N - exact)) < 3 / np.sqrt(N)
+    keep = exact * N >= 5
+    _, p, _, _ = chi2_contingency(np.vstack([cA[keep], cB[keep]]))
+    assert p > 0.001, p
+
+
+def test_the_coupling_is_monotone_on_a_general_domain():
+    """Exhaustive, not sampled -- see experiments/monotone_check.
+
+    The full run covers 5 domains x 5 Delta values with zero violations,
+    including a notch domain carrying 2889 configurations at each Delta. This
+    keeps the cheap end of it in the suite.
+    """
+    from sixvertex.domains import domain_mask
+    from experiments.mixing import weights_for_delta
+    from experiments.monotone_check import monotonicity_violations
+
+    cases = [([0, 4], [0, 4], [[1]]),
+             ([0, 2, 4, 6], [0, 2, 4, 6], [[1, 1, 1], [0, 1, 1], [0, 0, 1]]),
+             ([0, 2, 4, 6], [0, 2, 4, 6], [[0, 1, 0], [1, 1, 1], [0, 1, 0]])]
+    for d in (0.5, -3.0):
+        w = weights_for_delta(d)
+        for X, Y, I in cases:
+            v = monotonicity_violations(domain_mask(X, Y, I), w)
+            assert not v, (d, I, v)
+
+
+def test_the_monotone_region_is_sharp():
+    """Not over-conservative: monotonicity fails as soon as the region ends.
+
+    Walking a across the C >= A boundary with b = c = 1, the coupling is
+    monotone at a=1.00, where A = C exactly, and stops being monotone at
+    a=1.05. If it had survived outside, in_monotone_region would be refusing
+    weights that are perfectly samplable.
+    """
+    from sixvertex.cftp_exact import in_monotone_region
+    from sixvertex.domains import domain_mask
+    from experiments.monotone_check import monotonicity_violations
+
+    m = domain_mask([0, 4], [0, 4], [[1]])
+    on = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=1.0)
+    out = dict(a1=1.05, a2=1.05, b1=1.0, b2=1.0, c1=1.0, c2=1.0)
+    assert in_monotone_region(on) and not in_monotone_region(out)
+    assert not monotonicity_violations(m, on), "boundary case must be monotone"
+    assert monotonicity_violations(m, out), "just outside must NOT be monotone"
+
+
+def test_stationary_chain_estimator_agrees_with_independent_sampling():
+    """The cheap estimator must give the SAME answer as the expensive one.
+
+    A heat-bath sweep preserves the measure, so a chain started from one exact
+    CFTP sample is in equilibrium at every step and time averages are
+    unbiased. That is the whole justification for replacing 7e5 independent
+    CFTP samples (~25 h) with a few million sweeps (minutes), so it is checked
+    against the known answer rather than argued.
+
+    Reference: R_lo = 0.2119 at n=16, Delta=-3 from 2000 independent CFTP
+    samples. Errors here are chain-to-chain batch means -- observations within
+    a chain are correlated by construction and must never be pooled as if
+    independent.
+    """
+    import numpy as np
+
+    from experiments.mixing import weights_for_delta
+    from experiments.run_shift_chain import chain_observations, summarise
+
+    w = weights_for_delta(-3.0)
+    per = []
+    for c in range(8):
+        ks = chain_observations(16, w, nmeas=400, thin=24,
+                                seed=31_000 + c, start_seed=32_000 + c)
+        per.append((int((ks == -1).sum()), int((ks == 0).sum()),
+                    int((ks == 1).sum())))
+    s = summarise(per)
+    assert abs(s["R_lo"] - 0.2119) < 3 * np.hypot(s["se_lo"], 0.0113), s
+
+
+def test_mu_sigma_closed_form_inverts_a_known_discrete_gaussian():
+    """Known-answer test for the ratio -> (mu, sigma) inversion."""
+    import numpy as np
+
+    from experiments.run_shift_chain import mu_sigma_from_ratios
+
+    for mu, sg in ((-0.30, 0.36), (0.0, 0.5), (0.12, 0.42)):
+        k = np.arange(-6, 7)
+        p = np.exp(-(k - mu) ** 2 / (2 * sg * sg))
+        p /= p.sum()
+        i0 = int(np.argmax(p))
+        m, s = mu_sigma_from_ratios(p[i0 - 1] / p[i0], p[i0 + 1] / p[i0])
+        assert abs(m - mu) < 1e-6 and abs(s - sg) < 1e-6, (mu, sg, m, s)
+
+
+def test_island_ratio_is_non_monotone_in_delta():
+    """R_lo has an interior minimum near Delta=-3, and that forbids a limit.
+
+    Pinned because it is the fact that kills the tempting extrapolation. The
+    fitted slopes of 1/sigma^2 and 2mu/sigma^2 against ln c come out equal and
+    opposite to within 0.2 sigma, which would force mu -> -1/2 -- but that
+    statement is exactly "R_lo is constant", and R_lo is chi2=220 on 5 d.o.f.
+    away from constant. Each slope's own error (0.12) is far larger than the
+    structure living in their difference, so two marginal fits that each pass
+    are wrong together.
+    """
+    import csv
+    import os
+
+    import numpy as np
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "experiments", "shift_delta_chain_sample.csv")
+    rows = sorted(csv.DictReader(open(path)), key=lambda r: float(r["delta"]))
+    d = np.array([float(r["delta"]) for r in rows])
+    R = np.array([float(r["R_lo"]) for r in rows])
+    s = np.array([float(r["se_lo"]) for r in rows])
+
+    i = int(np.argmin(R))
+    assert 0 < i < len(R) - 1, "the minimum must be interior, not at an end"
+    assert -4.5 < d[i] < -2.0, d[i]
+    # and it is a real minimum, not noise, at both ends
+    assert R[0] - R[i] > 5 * np.hypot(s[0], s[i]), (R[0], R[i])
+    assert R[-1] - R[i] > 5 * np.hypot(s[-1], s[i]), (R[-1], R[i])
+
+    w = 1 / s ** 2
+    m = (w * R).sum() / w.sum()
+    assert float((((R - m) / s) ** 2).sum()) > 50, "R_lo must be far from constant"
+
+
+def test_mu_and_sigma_drift_monotonically_with_depth():
+    """Both decrease steadily across the AF phase, with no sign of settling."""
+    import csv
+    import os
+
+    import numpy as np
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "experiments", "shift_delta_chain_sample.csv")
+    rows = sorted(csv.DictReader(open(path)),
+                  key=lambda r: -abs(float(r["delta"])))
+    mu = np.array([float(r["mu"]) for r in rows])
+    sg = np.array([float(r["sigma"]) for r in rows])
+    # ordered from deepest to shallowest: both should increase
+    assert np.all(np.diff(mu) > 0), mu
+    assert np.all(np.diff(sg) > 0), sg
+    assert mu.min() < -0.34 and mu.max() > -0.31, mu
+
+
+def test_the_island_ratio_minimum_survives_a_change_of_size():
+    """The Delta=-3 minimum is a property of the model, not of n=16.
+
+    The Delta sweep was run at n=16 because it is cheapest, on the strength of
+    an n-independence check made at ONE Delta. Repeating at n=32 keeps the
+    minimum in the same place, so the shape is not a finite-size artifact.
+    """
+    import csv
+    import os
+
+    import numpy as np
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("shift_delta_chain_sample.csv",
+                 "shift_delta_chain_n32_sample.csv"):
+        rows = sorted(csv.DictReader(open(os.path.join(root, "experiments", name))),
+                      key=lambda r: float(r["delta"]))
+        d = np.array([float(r["delta"]) for r in rows])
+        R = np.array([float(r["R_lo"]) for r in rows])
+        i = int(np.argmin(R))
+        assert 0 < i < len(R) - 1, (name, "minimum must be interior")
+        assert -4.0 < d[i] < -2.0, (name, d[i])
+
+
+def test_the_island_ratio_level_is_size_dependent():
+    """The LEVEL does shift with n, which an earlier test was too weak to see.
+
+    Independent sampling over n=16..48 reported R_lo flat in n at p=0.27. The
+    chain estimator is precise enough to resolve a pooled offset of
+    +0.0088 +- 0.0029 (3.0 sigma) between n=16 and n=32, so "flat in n" was a
+    statement about that test's power, not about the model. Quoted mu and
+    sigma therefore carry an n label.
+    """
+    import csv
+    import os
+
+    import numpy as np
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def load(name):
+        rows = sorted(csv.DictReader(open(os.path.join(root, "experiments", name))),
+                      key=lambda r: float(r["delta"]))
+        g = lambda k: np.array([float(r[k]) for r in rows])
+        return g("delta"), g("R_lo"), g("se_lo")
+
+    d16, R16, s16 = load("shift_delta_chain_sample.csv")
+    d32, R32, s32 = load("shift_delta_chain_n32_sample.csv")
+    diffs, ses = [], []
+    for D in sorted(set(d16) & set(d32)):
+        i = int(np.where(d16 == D)[0][0])
+        j = int(np.where(d32 == D)[0][0])
+        diffs.append(R32[j] - R16[i])
+        ses.append(float(np.hypot(s16[i], s32[j])))
+    diffs, ses = np.array(diffs), np.array(ses)
+    w = 1 / ses ** 2
+    m = float((w * diffs).sum() / w.sum())
+    se = float(1 / np.sqrt(w.sum()))
+    assert abs(m) / se > 2.0, (m, se)
+    assert m > 0, m
+
+
+def test_compiled_domain_sweep_is_bit_identical_to_the_reference():
+    """Same standard applied to the DWBC sweep: identity, not 'close enough'.
+
+    The two differ only in how the same arithmetic is scheduled, so any
+    divergence is a bug in one of them. Checked on non-rectangular domains,
+    since a square exercises none of the masking.
+    """
+    import numpy as np
+
+    import sixvertex.domains as sd
+    from sixvertex.domains import (_weight_table, domain_mask,
+                                   extremal_heights, sweep, sweep_fast,
+                                   sweep_plan, sweep_plan_arrays)
+
+    if not sd._HAS_NUMBA:
+        return
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=2.0, c2=2.0)
+    for cuts, I in (([0, 2, 4, 6], [[1, 1, 1], [0, 1, 1], [0, 0, 1]]),
+                    ([0, 4, 8, 12], [[0, 1, 0], [1, 1, 1], [0, 1, 0]]),
+                    ([0, 4, 8, 12], [[1, 1, 1], [1, 1, 1], [0, 1, 1]])):
+        m = domain_mask(cuts, cuts, I)
+        lo, _ = extremal_heights(m)
+        plan, pa = sweep_plan(m), sweep_plan_arrays(m)
+        tbl = _weight_table(w)
+        tarr = np.array(tbl, dtype=np.float64)
+        A = lo.astype(np.float64).copy()
+        B = lo.astype(np.float64).copy()
+        rng = np.random.default_rng(3)
+        for _ in range(40):
+            r = rng.random(A.shape)
+            sweep(A, m, w, r, plan, tbl)
+            sweep_fast(B, pa, tarr, r)
+            assert np.array_equal(A, B), (cuts, I)
+
+
+def test_island_level_is_concentrated_on_three_cells_on_every_domain():
+    """The narrow fluctuation is not special to DWBC.
+
+    On the square, the staircase, the plus and the notch, all of the island
+    level's mass sits on {mode-2, mode, mode+2} -- levels step by 2 because
+    the parity-corrected height does. So the qualitative discrete-Gaussian
+    picture carries over to the Gorin-Kenyon domains.
+    """
+    import numpy as np
+
+    from sixvertex.domains import domain_mask
+    from experiments.island_domain import DOMAINS, chain_levels
+    from experiments.mixing import weights_for_delta
+
+    w = weights_for_delta(-3.0)
+    n = 24
+    for name, I in DOMAINS.items():
+        cuts = [0, n] if len(I) == 1 else [0, n // 3, 2 * n // 3, n]
+        m = domain_mask(cuts, cuts, I)
+        lv, _, _ = chain_levels(m, w, nmeas=250, thin=32,
+                                seed=81_000, start_seed=82_000)
+        good = lv[~np.isnan(lv)]
+        assert good.size > 200, (name, good.size)
+        vals, cnts = np.unique(good, return_counts=True)
+        mode = vals[np.argmax(cnts)]
+        three = sum((good == mode + d).sum() for d in (-2, 0, 2)) / good.size
+        assert three > 0.98, (name, three, dict(zip(vals, cnts)))
+
+
+def test_island_width_differs_between_domains_with_clean_separation():
+    """R_lo is domain-dependent, and not through component ambiguity.
+
+    The square and the notch BOTH have a cleanly separated island (45x and
+    51x over the runner-up), so neither number rests on a doubtful choice of
+    component -- yet their R_lo differ by a factor of about five. The
+    staircase (1.1x) and plus (2.6x) are recorded but carry that caveat.
+    """
+    import csv
+    import os
+
+    import numpy as np
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rows = {r["domain"]: r for r in csv.DictReader(
+        open(os.path.join(root, "experiments", "island_domain_sample.csv")))}
+    for d in ("square", "notch"):
+        assert float(rows[d]["separation"]) > 20, d
+    a, b = rows["square"], rows["notch"]
+    diff = float(a["R_lo"]) - float(b["R_lo"])
+    se = float(np.hypot(float(a["se_lo"]), float(b["se_lo"])))
+    assert diff / se > 5, (diff, se)
