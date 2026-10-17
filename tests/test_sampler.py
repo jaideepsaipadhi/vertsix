@@ -3099,3 +3099,86 @@ def test_browser_vertex_tally_matches_server_side_classification():
     assert all(tot[k] > 0 for k in ("a1", "a2", "b1", "b2", "c1", "c2")), dict(tot)
     frac = tot["b2"] / sum(tot.values())
     assert 0.50 < frac < 0.67, f"b2 fraction {frac:.3f} moved; expected ~0.58"
+
+
+# ------------------------------------------------ the CFTP stopping time T*
+def test_backward_coalescence_is_monotone_in_the_start_time():
+    """The property the binary search in cftp_stopping_time rests on.
+
+    CFTP draws the field for step k from _rand_field(master_seed, k), indexed
+    by ABSOLUTE time, so widening the window reuses the same fields near the
+    present. Coalescence is therefore monotone in T. The search would silently
+    return a wrong answer if it were not, so this asserts it rather than
+    quoting the argument.
+    """
+    from experiments.cftp_stopping import _coalesces_from
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import _colour_indices, _weight_table
+
+    n, w = 8, weights_for_delta(-2.0)
+    tbl = _weight_table(w)
+    colour_idx, size = _colour_indices(n)
+    for seed in (31, 32, 33):
+        flags = [_coalesces_from(n, w, seed, T, tbl, colour_idx, size)
+                 for T in range(1, 60)]
+        # once True, never False again
+        assert flags == sorted(flags), (seed, flags)
+
+
+def test_stopping_time_is_the_exact_minimum():
+    """T* coalesces and T*-1 does not -- that is the whole definition."""
+    from experiments.cftp_stopping import _coalesces_from, cftp_stopping_time
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import _colour_indices, _weight_table
+
+    for n, delta, seed in ((8, -2.0, 900), (10, 0.0, 901), (12, -3.0, 902)):
+        w = weights_for_delta(delta)
+        tbl = _weight_table(w)
+        colour_idx, size = _colour_indices(n)
+        T = cftp_stopping_time(n, w, seed)
+        assert T is not None and T >= 1
+        assert _coalesces_from(n, w, seed, T, tbl, colour_idx, size), (n, delta, T)
+        assert not _coalesces_from(n, w, seed, T - 1, tbl, colour_idx, size), \
+            (n, delta, T)
+
+
+def test_stopping_time_is_at_most_what_the_sampler_reports():
+    """The sampler's doubling schedule brackets T* from above.
+
+    cftp_sample starts its doubling at _estimate_T(n) rather than at 1, so
+    the reported number is NOT T* rounded up to a power of two and can
+    exceed 2*T* -- only the upper bound is a theorem, and only that is
+    asserted. The gap is the cost of the heuristic start, and measuring T*
+    directly is what the stopping-time sweep is for.
+    """
+    from experiments.cftp_stopping import cftp_stopping_time
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import cftp_sample
+
+    for n, delta, seed in ((8, -2.0, 900), (12, -1.0, 905)):
+        w = weights_for_delta(delta)
+        T = cftp_stopping_time(n, w, seed)
+        _, info = cftp_sample(n, w, master_seed=seed)
+        assert T <= info["sweeps"], (n, delta, T, info["sweeps"])
+
+
+def test_the_stopping_time_is_non_monotone_in_delta():
+    """The result Gorin asked for, pinned at a size that runs in seconds.
+
+    T* falls from Delta=+0.5 to a minimum near Delta=-1 and then climbs again
+    into the antiferroelectric phase. Both legs are asserted: a one-sided
+    check would pass on a monotone curve.
+    """
+    import numpy as np
+
+    from experiments.cftp_stopping import cftp_stopping_time
+    from experiments.mixing import weights_for_delta
+
+    def med(delta, k=12):
+        w = weights_for_delta(delta)
+        return float(np.median([cftp_stopping_time(12, w, 8_000 + s)
+                                for s in range(k)]))
+
+    hot, mid, cold = med(0.5), med(-1.0), med(-4.0)
+    assert mid < hot, (hot, mid, cold)
+    assert mid < cold, (hot, mid, cold)
