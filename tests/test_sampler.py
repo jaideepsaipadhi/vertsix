@@ -3037,3 +3037,65 @@ def test_general_domain_sampler_accepts_a_missing_seed():
     H, info = cftp_sample(m, dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0,
                                   c1=2.0, c2=2.0), master_seed=None)
     assert isinstance(info["master_seed"], int)
+
+
+def test_the_frozen_view_is_off_for_every_model_without_a_mask():
+    """"liquid / frozen" marks sites a local chain can still flip.
+
+    Neither the stochastic model nor a general domain has such a mask -- the
+    server sends an empty one for both -- so this view would paint the whole
+    configuration as frozen. That is a confident wrong picture, which is why
+    the view was taken off the menu for the stochastic model already; the
+    general domain was missed when that model was added.
+
+    Caught by stepping a browser through every model in every view and
+    looking at what was drawn, not by reading the diff.
+    """
+    import os
+
+    here = os.path.dirname(__file__)
+    code = "\n".join(
+        ln for ln in open(os.path.join(here, "..", "static", "draw.js")).read().splitlines()
+        if not ln.strip().startswith("//"))
+    body = _js_function_body(code, "function updateModelUI")
+
+    assert "const noMask = stoch || domain;" in body, (
+        "the frozen view is gated on the stochastic model alone; a general "
+        "domain has no flippable-site mask either")
+    assert "activeOpt.disabled = noMask;" in body
+    assert 'if (noMask && viewMode.value === "active") viewMode.value = "paths";' in body, (
+        "a user already on the frozen view is left there when switching to a "
+        "model that has no mask")
+
+
+def test_browser_vertex_tally_matches_server_side_classification():
+    """What the page draws must be what the sampler produced.
+
+    Driving the real page at n=40 on the staircase domain (c=2) and reading
+    its own types export gave a1 78, a2 78, b1 92, b2 625, c1 117, c2 77 over
+    1067 cells. Classifying server-side over six samples gives 87.8, 87.8,
+    90.0, 623.0, 109.2, 69.2 -- the same distribution, and in particular the
+    same heavy b2 frozen region, which is real and not a rendering fault.
+
+    This pins the server half, so a drift in the classification would show up
+    even without a browser in the loop.
+    """
+    from collections import Counter
+
+    from sixvertex.domains import (classify_counts, classify_invalid,
+                                   cftp_sample, domain_mask)
+
+    m = domain_mask([0, 13, 26, 40], [0, 13, 26, 40],
+                    [[1, 1, 1], [0, 1, 1], [0, 0, 1]])
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=2.0, c2=2.0)
+    tot = Counter()
+    runs = 3
+    for s in range(runs):
+        H, _ = cftp_sample(m, w, master_seed=400 + s)
+        assert not classify_invalid(H, m)
+        tot.update(classify_counts(H, m))
+
+    assert sum(tot.values()) == runs * int(m.sum())
+    assert all(tot[k] > 0 for k in ("a1", "a2", "b1", "b2", "c1", "c2")), dict(tot)
+    frac = tot["b2"] / sum(tot.values())
+    assert 0.50 < frac < 0.67, f"b2 fraction {frac:.3f} moved; expected ~0.58"

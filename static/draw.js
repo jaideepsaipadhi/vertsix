@@ -1194,14 +1194,22 @@
         : sub.dataset.dwbc;
     }
 
+    // "liquid / frozen" marks the sites a local Markov chain can still flip.
+    // Neither the stochastic model nor a general domain has such a mask --
+    // the server sends an empty one for both -- so this view would paint the
+    // entire configuration as frozen: a confident wrong picture, which is
+    // exactly the failure this view was taken off the menu for once already.
+    // The domain case was missed when that model was added, and was caught by
+    // actually stepping a browser through every model in every view.
     const activeOpt = document.querySelector('#viewmode option[value="active"]');
+    const noMask = stoch || domain;
     if (activeOpt) {
-      activeOpt.disabled = stoch;
-      activeOpt.textContent = stoch
+      activeOpt.disabled = noMask;
+      activeOpt.textContent = noMask
         ? "liquid / frozen (DWBC only)"
         : "liquid / frozen (arctic boundary)";
     }
-    if (stoch && viewMode.value === "active") viewMode.value = "paths";
+    if (noMask && viewMode.value === "active") viewMode.value = "paths";
     // The DWBC controls drive a different model with different boundary
     // conditions. Disable rather than hide them: leaving them clickable would
     // invite a silent mismatch, but hiding them makes the tool look like it
