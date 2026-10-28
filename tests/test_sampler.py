@@ -3295,3 +3295,78 @@ def test_every_server_sample_cancels_the_pending_lattice_rebuild():
             assert "cancelPendingRebuild()" in window, (
                 f"the handler at {pat!r} does not cancel the pending rebuild")
     assert found >= 4, found
+
+
+def test_island_predicate_is_off_above_the_transition_and_on_below():
+    """Pins the solid-c crossing predicate at a size that runs in seconds.
+
+    The point of the definition is that it says NO where there is no island.
+    Measured at n=48 with 80 samples it gives 0.000 at Delta=-0.5 and 0.650
+    at Delta=-3; this asserts the separation with wide margins so it pins the
+    behaviour rather than the third decimal.
+
+    A regression here most likely means the erosion step or the window
+    fraction moved. Both matter: without erosion the predicate fires on the
+    speckled c region that exists at every Delta, and with the window at N/2
+    instead of N/5 it asks the island to be twice the size it ever reaches.
+    """
+    import numpy as np
+
+    from experiments.island_exists import island_exists
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import cftp_sample
+
+    def rate(delta, n=32, reps=24):
+        w = weights_for_delta(delta)
+        hits = 0
+        for s in range(reps):
+            H, _ = cftp_sample(n, w, master_seed=31_000 + 97 * s)
+            hits += int(island_exists(H, n)[0])
+        return hits / reps
+
+    hot, cold = rate(-0.5), rate(-3.0)
+    assert hot <= 0.10, f"predicate fires at Delta=-0.5 ({hot:.3f})"
+    assert cold >= 0.40, f"predicate too quiet at Delta=-3 ({cold:.3f})"
+    assert cold - hot > 0.3, (hot, cold)
+
+
+def test_island_predicate_needs_both_erosion_and_a_small_window():
+    """The two ingredients each do work; neither is decoration.
+
+    Without erosion the predicate fires at Delta=-0.5, where the c region is
+    speckled rather than solid and there is no island. This asserts that,
+    so that dropping the erosion step cannot pass silently.
+    """
+    import numpy as np
+    from scipy import ndimage
+
+    from experiments.island import c_face_mask
+    from experiments.island_exists import island_exists
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import cftp_sample
+
+    w = weights_for_delta(-0.5)
+    n, reps = 32, 24
+    with_erosion, without = 0, 0
+    for s in range(reps):
+        H, _ = cftp_sample(n, w, master_seed=31_000 + 97 * s)
+        with_erosion += int(island_exists(H, n)[0])
+
+        # same test, skipping the erosion step
+        cm = c_face_mask(np.asarray(H, np.int64), n)
+        lo = int(round(n * 0.4))
+        hi = int(round(n * 0.6))
+        W = cm[lo:hi, lo:hi]
+        lab, nl = ndimage.label(W, structure=np.ones((3, 3)))
+        span = 0
+        for c in range(1, nl + 1):
+            cols = np.nonzero((lab == c).any(axis=0))[0]
+            if cols.size:
+                span = max(span, cols.max() - cols.min() + 1)
+        without += int(span >= W.shape[1])
+
+    assert with_erosion <= 0.10 * reps, with_erosion
+    assert without > with_erosion, (
+        f"without erosion {without}/{reps}, with {with_erosion}/{reps}: "
+        f"the erosion step is doing nothing, so the predicate is not "
+        f"measuring solidity")

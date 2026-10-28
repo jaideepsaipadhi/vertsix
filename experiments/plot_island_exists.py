@@ -4,7 +4,8 @@
     python3 experiments/plot_island_exists.py island_exists.csv out.png
 
 The predicate is the crossing criterion in experiments/island_exists.py: a
-constant-parity-corrected-height cluster spanning the central window. Panel
+cluster of SOLID c-faces -- c-faces all of whose eight neighbours are also
+c-faces -- spanning the central N/5 window. Panel
 (a) is the probability itself with binomial intervals; panel (b) is the mean
 widest extent, a continuous companion that shows HOW the marginal cases fail
 rather than only that they do.
@@ -75,13 +76,13 @@ def main(src, dst):
     axA.set_ylim(-0.04, 1.08)
     axA.set_xlabel(r"$\Delta$", color=INK2, fontsize=10.5)
     axA.set_ylabel("P(island exists)", color=INK2, fontsize=10.5)
-    axA.set_title("(a)  does a constant-height cluster cross?",
+    axA.set_title("(a)  does a solid block of c-vertices span the middle?",
                   color=INK, fontsize=11.5, loc="left", pad=9)
     axA.legend(frameon=False, fontsize=9, labelcolor=INK2, loc="center left")
 
     axB.set_xlabel(r"$\Delta$", color=INK2, fontsize=10.5)
     axB.set_ylabel("mean widest extent / window", color=INK2, fontsize=10.5)
-    axB.set_title("(b)  how far the best cluster gets",
+    axB.set_title("(b)  how far the widest solid block gets",
                   color=INK, fontsize=11.5, loc="left", pad=9)
     axB.legend(frameon=False, fontsize=9, labelcolor=INK2, loc="upper right")
 

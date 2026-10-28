@@ -38,23 +38,45 @@ so the right variable is the parity-corrected height
 which is genuinely constant there. At Delta = -0.5 the central region is
 c-rich but G still fluctuates across it.
 
-THE PREDICATE. Fix a level L and call a FACE level-L when all four of its
-corners have G = L. Take the level-L faces with 8-connectivity. The island
-exists iff some component, for some L, CROSSES the central window -- spans it
-from the left edge to the right. Crossing is the natural threshold-free yes/no
-here: it needs no tuned area cutoff, and crossing probabilities are the
-observables that actually develop sharp transitions in N. The central window
-of side N/2 keeps the frozen corners of DWBC out, since those would otherwise
-supply their own enormous constant-G regions.
+WHAT THE PICTURE ACTUALLY SHOWS. Gorin's N=200, Delta=-3 simulation shows the
+island as a near-SOLID block of c-vertices in the middle, surrounded by a
+speckled c region, both inside the arctic curve. The radial profile confirms
+it: at n=96, Delta=-3 the c-density is 0.89-0.93 for r/R <= 0.17 and 0.58 at
+the edge, whereas at Delta=-0.5 the centre reaches only 0.57-0.65 against an
+edge value of 0.44. So the island is where the c region is SOLID, not merely
+where it is large -- and the solid core is only about 0.25N across.
 
-Faces, not lattice points. Running this on the POINT set {G = L} gives
-P = 1 at every Delta measured, because an 8-connected set of points can be a
-one-cell-wide filament and a filament always crosses something. Requiring a
-whole face to be level forces the crossing object to have width, which is what
-"the height is constant on a region" was supposed to mean. This is the third
-definition tried here and the first that separates the two phases; the two
-discarded ones are recorded above and in experiments/island.py so the same
-ground is not covered again.
+THE PREDICATE. Call a c-face SOLID when all eight of its neighbours are also
+c-faces (one step of binary erosion). The island exists iff the solid c-faces
+contain a connected component spanning the central window, taken with
+8-connectivity. The window is N/5 by default, because the core is about a
+quarter of N: demanding a span of N/2, as an earlier version did, asks the
+island to be twice the size it ever reaches, and that alone held P below 0.4
+at Delta=-3 where the island is unmistakable.
+
+Measured at n=64 with 40 samples per point, this gives P = 0.00 at
+Delta = -0.5, -0.75 and -1.0, then 0.03, 0.07, 0.30, 0.68 at -1.25, -1.5,
+-2.0 and -3.0: zero above the transition and rising below it, with the onset
+at Delta = -1.
+
+DEFINITIONS THAT FAIL, recorded so the ground is not covered twice:
+
+  - SIZE of the c region. The largest 8-connected component of c-faces is
+    macroscopic on both sides of Delta = -1 -- area fraction 0.23 at
+    Delta = -0.5 and 0.35 at Delta = -3, neither decaying in n over
+    n = 16..48. Not a percolation artifact either: the c-density at
+    Delta = -0.5 is 0.31, below the 8-connected site threshold of about
+    0.407. A size-based predicate says yes everywhere.
+
+  - CROSSING ON LATTICE POINTS of a level set of the height. Trivially true,
+    P = 1 at every Delta, because an 8-connected set of points can be one
+    cell wide and a filament always crosses.
+
+  - CROSSING BY LEVEL FACES, where a face is level when its four corners
+    share the parity-corrected height G = H - ((i+j) mod 2). This separates
+    the phases but much less cleanly than solidity: at n=64 it still fires
+    with probability 0.20 at Delta = -0.5, where there is no island. Keeping
+    the height flat is a weaker signal than keeping the c region solid.
 
 A note on defects. An earlier attempt required strict flatness of whole faces
 and measured the largest such component; it decayed with n at Delta = -3 as
@@ -83,43 +105,40 @@ def corrected_height(H, n):
     return H - ((ii + jj) & 1)
 
 
-def island_exists(H, n, frac=0.5):
-    """True iff a level FACE cluster crosses the central window left-to-right.
+def solid_c_faces(H, n):
+    """c-faces all of whose eight neighbours are c-faces."""
+    from experiments.island import c_face_mask
+    cm = c_face_mask(np.asarray(H, dtype=np.int64), n)
+    return ndimage.binary_erosion(cm, structure=np.ones((3, 3)),
+                                  border_value=0)
 
-    Returns (exists, level, width_fraction) where width_fraction is the widest
-    horizontal extent achieved by any level cluster, as a fraction of the
+
+def island_exists(H, n, frac=0.2):
+    """True iff a solid-c cluster spans the central window left-to-right.
+
+    Returns (exists, None, width_fraction) where width_fraction is the widest
+    horizontal extent achieved by any solid-c cluster, as a fraction of the
     window -- a continuous companion to the yes/no answer, which shows HOW a
-    marginal case fails rather than only that it does.
+    marginal case fails rather than only that it does. The middle slot is kept
+    for call compatibility; solidity carries no level label.
     """
-    G = corrected_height(H, n)
-    m = G.shape[0]
+    solid = solid_c_faces(H, n)
+    m = solid.shape[0]
     lo = int(round(m * (1 - frac) / 2))
     hi = int(round(m * (1 + frac) / 2))
-    W = G[lo:hi, lo:hi]
-    if W.shape[0] < 2:
+    W = solid[lo:hi, lo:hi]
+    if W.size == 0 or W.shape[1] == 0:
         return False, None, 0.0
+    w = W.shape[1]
 
-    # A face is level iff all four of its corners agree.
-    level_face = ((W[:-1, :-1] == W[:-1, 1:]) & (W[:-1, :-1] == W[1:, :-1])
-                  & (W[:-1, :-1] == W[1:, 1:]))
-    lev = W[:-1, :-1]
-    w = level_face.shape[1]
-
-    best_frac, best_level, found = 0.0, None, False
-    structure = np.ones((3, 3))
-    for L in np.unique(lev[level_face]):
-        lab, nl = ndimage.label(level_face & (lev == L), structure=structure)
-        if nl == 0:
-            continue
-        cols = np.indices(lab.shape)[1]
-        for c in range(1, nl + 1):
-            sel = cols[lab == c]
-            ext = float(sel.max() - sel.min() + 1) / w
-            if ext > best_frac:
-                best_frac, best_level = ext, int(L)
-            if ext >= 1.0:
-                found = True
-    return found, best_level, best_frac
+    lab, nl = ndimage.label(W, structure=np.ones((3, 3)))
+    best = 0.0
+    for c in range(1, nl + 1):
+        cols = np.nonzero((lab == c).any(axis=0))[0]
+        if cols.size:
+            ext = float(cols.max() - cols.min() + 1) / w
+            best = max(best, ext)
+    return best >= 1.0, None, best
 
 
 def main():
@@ -128,7 +147,7 @@ def main():
     ap.add_argument("--deltas", type=float, nargs="+",
                     default=[-0.25, -0.5, -0.75, -1.0, -1.25, -1.5, -2.0, -3.0])
     ap.add_argument("--reps", type=int, default=40)
-    ap.add_argument("--frac", type=float, default=0.5,
+    ap.add_argument("--frac", type=float, default=0.2,
                     help="side of the central window, as a fraction of N")
     ap.add_argument("--out", default="island_exists.csv")
     args = ap.parse_args()
