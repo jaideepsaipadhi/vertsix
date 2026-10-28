@@ -64,7 +64,7 @@
     <header>
       <h1>vertsix</h1>
       <div class="subtitle">six-vertex height-function sampler &middot; domain wall boundary conditions</div>
-      <div class="credit">the project was proposed by Vadim Gorin</div>
+      <div class="credit">built by Jaideep Sai Padhi &middot; the project was proposed by Vadim Gorin</div>
     </header>
     <main>
       <div class="stage" id="stage">
@@ -136,11 +136,11 @@
           </p>
           <div class="field" id="stoch-params" style="display:none;">
             <label for="sb1">b&#8321; (turn probability)</label>
-            <input type="range" id="sb1" min="0.02" max="0.98" step="0.02" value="0.30" />
-            <output id="sb1-out">0.30</output>
+            <input type="range" id="sb1" min="0.02" max="0.98" step="0.02" value="0.80" />
+            <output id="sb1-out">0.80</output>
             <label for="sb2">b&#8322;</label>
-            <input type="range" id="sb2" min="0.02" max="0.98" step="0.02" value="0.70" />
-            <output id="sb2-out">0.70</output>
+            <input type="range" id="sb2" min="0.02" max="0.98" step="0.02" value="0.20" />
+            <output id="sb2-out">0.20</output>
             <output id="stoch-delta" style="display:block;margin-top:0.4em;"></output>
             <button id="btn-stoch" class="exact" style="margin-top:0.5em;">sample (exact)</button>
           </div>
@@ -275,6 +275,18 @@
           region contains the whole antiferroelectric phase &Delta;&lt;&minus;1,
           so &Delta;=&minus;3 is exactly samplable.
         </p>
+        <p class="note">
+          <strong>How long CFTP runs.</strong> The stopping time
+          T*&nbsp;=&nbsp;min{T : the composed update map from &minus;T to 0 is
+          constant} measured exactly, against &Delta;, one curve per lattice
+          size:
+          <a href="figures/cftp-stopping-time.png" target="_blank">view the
+          plot</a>. It is non-monotone, with a minimum near
+          &Delta;&nbsp;=&nbsp;&minus;0.5 to &minus;1, and the exponent in
+          T*&nbsp;~&nbsp;n<sup>&alpha;</sup> is flat at 2.30 for
+          &Delta;&nbsp;&ge;&nbsp;&minus;1.5 and rises to 2.86 at
+          &Delta;&nbsp;=&nbsp;&minus;4.
+        </p>
       </div>
     </main>
   </div>
@@ -308,6 +320,6 @@
   });
 </script>
 <script src="sixvertex.js?v=1"></script>
-<script src="draw.js?v=49"></script>
+<script src="draw.js?v=50"></script>
 </body>
 </html>

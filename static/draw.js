@@ -123,6 +123,8 @@
   let playing = false;
   let totalSweeps = 0;
   let busy = false;
+  // Assigned where the n-slider debounce lives; see cancelPendingRebuild there.
+  let cancelPendingRebuild = () => {};
 
   const DEFAULT_VERTEX6_COLORS = {
     a1: [232, 92, 92],
@@ -295,6 +297,14 @@
   // Debounced: dragging the slider fires a stream of input events and each
   // rebuild allocates a fresh lattice.
   let nRebuildTimer = null;
+  // Any server-side sample (DWBC exact, stochastic, general domain) must
+  // cancel a pending rebuild first. The n slider schedules localInit() 200ms
+  // out; changing the size and then clicking sample within that window let the
+  // rebuild land AFTER the sample and silently replace it with a fresh
+  // in-browser DWBC lattice. That is what "the stochastic rendering does not
+  // work" looked like from the outside: a correct sample, drawn and then
+  // thrown away a fraction of a second later.
+  cancelPendingRebuild = () => { clearTimeout(nRebuildTimer); nRebuildTimer = null; };
   nSlider.addEventListener("input", () => {
     nOut.textContent = nSlider.value;
     bumpParams();
@@ -1107,6 +1117,7 @@
     const w = currentWeights();
     const n = parseInt(nSlider.value, 10);
     if (!isExactSafe(w, n)) return;
+    cancelPendingRebuild();
     exactInFlight = true;
     playing = false;
     btnPlay.classList.remove("active");
@@ -1297,6 +1308,7 @@
   }
 
   async function sampleDomain() {
+    cancelPendingRebuild();
     const btn = document.getElementById("btn-domain");
     const msg = document.getElementById("domain-msg");
     const n = parseInt(nSlider.value, 10);
@@ -1367,6 +1379,7 @@
   const btnStoch = document.getElementById("btn-stoch");
   if (btnStoch) btnStoch.addEventListener("click", async () => {
     if (busy) return;
+    cancelPendingRebuild();
     busy = true; btnStoch.disabled = true;
     hudStatus.textContent = "sampling (stochastic)...";
     try {
@@ -1414,6 +1427,7 @@
     if (exactInFlight) return;
     const w = currentWeights();
     if (!isExactSafe(w, parseInt(nSlider.value, 10))) return;
+    cancelPendingRebuild();
     exactInFlight = true;
     playing = false;
     btnPlay.classList.remove("active");

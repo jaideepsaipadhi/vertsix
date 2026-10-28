@@ -3182,3 +3182,116 @@ def test_the_stopping_time_is_non_monotone_in_delta():
     hot, mid, cold = med(0.5), med(-1.0), med(-4.0)
     assert mid < hot, (hot, mid, cold)
     assert mid < cold, (hot, mid, cold)
+
+
+# --------------------------------------------- the stochastic model, again
+def test_stochastic_sampler_matches_brute_force_enumeration():
+    """End-to-end check of the sweep: every configuration, exact probability.
+
+    The per-vertex rule is enumerated over the whole tree and the resulting
+    distribution over (h, v) compared with the sampler's empirical one. This
+    catches sweep-order and indexing faults that a marginal check would not,
+    because it pins the JOINT law rather than one statistic.
+    """
+    from collections import Counter
+
+    import numpy as np
+    from scipy.stats import chi2 as chi2_dist
+
+    from sixvertex.stochastic import sample
+
+    b1, b2, n = 0.35, 0.6, 3
+
+    exact = {}
+
+    def rec(i, j, h, v, p):
+        if i == n:
+            k = (tuple(h.ravel()), tuple(v.ravel()))
+            exact[k] = exact.get(k, 0.0) + p
+            return
+        ni, nj = (i, j + 1) if j + 1 < n else (i + 1, 0)
+        hi, vi = h[i, j], v[i, j]
+        if hi == 1 and vi == 1:
+            opts = [((1, 1), 1.0)]
+        elif hi == 0 and vi == 0:
+            opts = [((0, 0), 1.0)]
+        elif hi == 1 and vi == 0:
+            opts = [((1, 0), b1), ((0, 1), 1 - b1)]
+        else:
+            opts = [((0, 1), b2), ((1, 0), 1 - b2)]
+        for (ho, vo), q in opts:
+            h2, v2 = h.copy(), v.copy()
+            h2[i, j + 1] = ho
+            v2[i + 1, j] = vo
+            rec(ni, nj, h2, v2, p * q)
+
+    h0 = np.zeros((n, n + 1), dtype=int)
+    v0 = np.zeros((n + 1, n), dtype=int)
+    h0[:, 0] = 1
+    rec(0, 0, h0, v0, 1.0)
+    assert abs(sum(exact.values()) - 1.0) < 1e-12
+
+    runs = 60_000
+    seen = Counter()
+    for s in range(runs):
+        h, v = sample(n, b1, b2, seed=s)
+        seen[(tuple(h.ravel()), tuple(v.ravel()))] += 1
+
+    assert set(seen) <= set(exact), "sampler produced a configuration of probability zero"
+    chi = sum((seen.get(k, 0) - p * runs) ** 2 / (p * runs) for k, p in exact.items())
+    dof = len(exact) - 1
+    assert chi2_dist.sf(chi, dof) > 0.001, f"chi2 {chi:.1f} on {dof} dof"
+
+
+def test_the_first_row_of_the_stochastic_model_is_geometric():
+    """Row 0 is exactly solvable, so it pins the orientation of the sweep.
+
+    Nothing enters from below, one arrow enters at the left, and it travels
+    right a Geometric(1-b1) number of steps before turning up. If rows and
+    columns were transposed anywhere this would come out Geometric(1-b2).
+    """
+    import numpy as np
+
+    from sixvertex.stochastic import sample
+
+    b1, b2, n = 0.3, 0.7, 30
+    runs = np.array([int(sample(n, b1, b2, seed=s)[0][0, :n + 1].sum())
+                     for s in range(3000)])
+    assert abs(runs.mean() - 1 / (1 - b1)) < 0.05, runs.mean()
+    assert abs((runs == 1).mean() - (1 - b1)) < 0.02, (runs == 1).mean()
+
+
+def test_every_server_sample_cancels_the_pending_lattice_rebuild():
+    """Regression: a size change used to silently discard the next sample.
+
+    The n slider schedules localInit() on a 200ms debounce. Changing the size
+    and then clicking a sample button within that window let the rebuild land
+    AFTER the sample and replace it with a fresh in-browser DWBC lattice --
+    the sample was computed, drawn, and thrown away a fraction of a second
+    later. Driving the real page showed it at n=120 and n=200 and not at the
+    default size, which is why reading the diff never found it.
+
+    Every entry point that installs a server-produced frame must cancel the
+    pending rebuild first.
+    """
+    import re
+
+    src = open("static/draw.js").read()
+    assert "cancelPendingRebuild = () =>" in src, "the hook is gone"
+
+    # Each handler that fetches a sample from the server.
+    # The guard each handler sets on entry. Checking these rather than the
+    # fetch itself keeps the window small and the test honest: the cancel has
+    # to happen at the top of the handler, before any await.
+    markers = [r"exactInFlight = true", r"btnStoch\.disabled = true",
+               r"async function sampleDomain\(\)"]
+    found = 0
+    for pat in markers:
+        hits = [m.start() for m in re.finditer(pat, src)]
+        assert hits, f"entry point {pat!r} is gone; update this test"
+        for pos in hits:
+            found += 1
+            window = src[max(0, pos - 400):pos + 400]
+            assert "cancelPendingRebuild()" in window, (
+                f"the handler at {pat!r} does not cancel the pending rebuild")
+    assert found >= 4, found
