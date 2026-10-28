@@ -3370,3 +3370,41 @@ def test_island_predicate_needs_both_erosion_and_a_small_window():
         f"without erosion {without}/{reps}, with {with_erosion}/{reps}: "
         f"the erosion step is doing nothing, so the predicate is not "
         f"measuring solidity")
+
+
+def test_the_island_core_is_a_filament_above_the_transition():
+    """The order parameter separates the two phases by SHAPE, not size.
+
+    A = (largest solid-c component)/N^2 decays like N^-theta, so the core
+    covers N^(2-theta) faces: theta = 1 is a filament of length N, theta = 0
+    a macroscopic island. Measured over N = 32..64, theta is about 1 at
+    Delta = -1 and 0.16 at Delta = -3.
+
+    This asserts the ordering, which is what the three sizes support, rather
+    than either exponent's value, which they do not.
+    """
+    import numpy as np
+
+    from experiments.island_order import core_area_fraction
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import cftp_sample
+
+    def theta(delta, ns=(24, 40), reps=14):
+        a = []
+        w = weights_for_delta(delta)
+        for n in ns:
+            vals = [core_area_fraction(
+                cftp_sample(n, w, master_seed=51_000 + 97 * s)[0], n)
+                for s in range(reps)]
+            a.append(np.mean(vals))
+        return -np.polyfit(np.log(ns), np.log(a), 1)[0]
+
+    hot, cold = theta(-1.0), theta(-3.0)
+    assert cold < hot, f"theta did not drop with depth: {hot:.2f} -> {cold:.2f}"
+    assert hot - cold > 0.15, (hot, cold)
+    # NOT asserted: the value of theta. It drifts down as the fitting window
+    # moves up -- theta(-3) is 0.64 over n = 24..40 and 0.16 over n = 32..64 --
+    # which is consistent with theta -> 0 and a genuinely macroscopic island,
+    # but means no single fit is the number. The test runs at the small sizes
+    # for speed, so it pins only the gap.
+    assert cold < 0.8, f"core still decaying fast at Delta=-3 (theta={cold:.2f})"
