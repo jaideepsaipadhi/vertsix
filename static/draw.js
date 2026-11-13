@@ -154,6 +154,26 @@
     return !!m && m.value === "domain";
   }
 
+  function companionSeed(s) {
+    // The fluctuation view differences two samples, so they must not share a
+    // seed. They did: both calls sent currentSeed(), so with any seed in the
+    // box the two samples were IDENTICAL and the field was identically zero
+    // -- a blank picture captioned "from two independent exact samples".
+    // Blank box (null) was fine, because the server then drew its own seed
+    // each time, which is exactly why this survived: it only broke for
+    // someone who set a seed to make their figure reproducible.
+    //
+    // Derive the second stream instead of randomising it, so a chosen seed
+    // still reproduces the same pair of samples and the same picture. Both
+    // samplers expand the seed through numpy's SeedSequence, which
+    // decorrelates nearby values, but keep them far apart anyway.
+    if (s === null) return null;
+    const a = (s >>> 0) % 2147483647;
+    let t = (((s >>> 0) ^ 0x9e3779b9) >>> 0) % 2147483647;
+    if (t === a) t = (t + 1) % 2147483647;
+    return t;
+  }
+
   function currentSeed() {
     const el = document.getElementById("seed");
     if (!el) return null;
@@ -171,9 +191,12 @@
     };
   }
 
-  // Default only; the server sends the authoritative value in /api/init
-  // (field `max_exact_n`). Keeping a hardcoded copy in sync by hand is how
-  // client and server gating drift apart.
+  // Default only; the server sends the authoritative value in /api/config
+  // (field `max_exact_n`), which is what this page fetches on load. Keeping
+  // a hardcoded copy in sync by hand is how client and server gating drift
+  // apart. (This comment named /api/init, a session endpoint the shipped
+  // client has not called since the chain moved into the browser -- it and
+  // /api/step are now reached only by their own tests.)
   let MAX_EXACT_N = 14;
 
   // Above this n, CFTP is still exact but the wait becomes noticeable
@@ -973,8 +996,19 @@
     const n = parseInt(nSlider.value, 10);
     const w = currentWeights();
     try {
-      sampler = new SixVertexJS(n, w, Date.now() & 0xffffffff);
-      shadow = makeShadow(n, w);
+      // Honour the seed box here too. The in-browser chain is what the
+      // page runs by DEFAULT, and it used to seed itself from the clock and
+      // ignore the box entirely -- so the box's own tooltip ("the same seed,
+      // n and weights give the same configuration") was false for the path
+      // most people see first, and quietly: every run looks fine alone.
+      //
+      // For a Markov chain the seed fixes the trajectory from this reset, so
+      // the same seed, n, weights and number of sweeps reproduce the same
+      // state; it cannot undo a different history of slider moves.
+      const s0 = currentSeed();
+      const localSeed = s0 === null ? (Date.now() & 0xffffffff) : (s0 >>> 0);
+      sampler = new SixVertexJS(n, w, localSeed);
+      shadow = makeShadow(n, w, localSeed);
       totalSweeps = 0;
       sweepCount.textContent = totalSweeps;
       hudDevice.textContent = "in-browser (JS)";
@@ -989,9 +1023,16 @@
     hideLoadingScreen();
   }
 
-  function makeShadow(n, w) {
-    // same weights, opposite extremal start
-    const S = new SixVertexJS(n, w, (Date.now() ^ 0x5bf03635) & 0xffffffff);
+  function makeShadow(n, w, baseSeed) {
+    // Same weights, opposite extremal start -- and INDEPENDENT randomness.
+    // The badge compares the two chains to judge equilibration, so driving
+    // them with the same stream would make them agree for the wrong reason
+    // and report equilibrium early. companionSeed keeps them apart while
+    // staying reproducible when the user has fixed a seed.
+    const fallback = (Date.now() ^ 0x5bf03635) & 0xffffffff;
+    const sd = baseSeed === undefined || baseSeed === null
+      ? fallback : companionSeed(baseSeed);
+    const S = new SixVertexJS(n, w, sd);
     const size = n + 1;
     const corners = [[0, 0, 0], [n, 0, n], [0, n, n], [n, n, 0]];
     for (let i = 0; i < size; i++) {
@@ -1122,7 +1163,7 @@
     if (!playing) localStep();
   });
 
-  async function fetchExactSample(n, w) {
+  async function fetchExactSample(n, w, seedOverride) {
     // One exact sample from the server, with the same poll-failure tolerance
     // as the main handler: a long job is many requests and an isolated bad
     // response must not abandon a computation the server is still running.
@@ -1131,7 +1172,8 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         n, a1: w.a1, a2: w.a2, b1: w.b1, b2: w.b2,
-        c_up: w.c1, c_down: w.c2, seed: currentSeed() }),
+        c_up: w.c1, c_down: w.c2,
+        seed: seedOverride === undefined ? currentSeed() : seedOverride }),
     });
     const startData = await startRes.json();
     if (!startData.ok) throw new Error(startData.error || "failed to start");
@@ -1176,9 +1218,10 @@
     hudStatus.textContent = "sampling two copies (server)...";
     exactInfo.textContent = "drawing the first of two independent samples...";
     try {
-      const A = await fetchExactSample(n, w);
+      const seedA = currentSeed();
+      const A = await fetchExactSample(n, w, seedA);
       exactInfo.textContent = "drawing the second of two independent samples...";
-      const B = await fetchExactSample(n, w);
+      const B = await fetchExactSample(n, w, companionSeed(seedA));
       if (paramGen !== requestedGen) {
         exactInfo.textContent =
           "discarded: the chain was reset or its parameters changed";
@@ -1202,6 +1245,15 @@
       draw();
       let mx = 0;
       for (let k = 0; k < diff.length; k++) mx = Math.max(mx, Math.abs(diff[k]));
+      if (mx === 0) {
+        // Two independent samples agreeing everywhere is not a fluctuation
+        // field; say so rather than showing an empty picture as a result.
+        exactInfo.textContent =
+          "the two samples came back identical, so the difference is zero " +
+          "everywhere. That is not a fluctuation field -- please report it.";
+        hudStatus.textContent = "fluctuations unavailable";
+        return;
+      }
       exactInfo.textContent =
         `height fluctuations: (H1 - H2)/sqrt(2) from two independent exact ` +
         `samples; range +/-${mx.toFixed(2)}`;
@@ -1387,6 +1439,9 @@
         body: JSON.stringify({
           n, c_up: w.c1, c_down: w.c2, a1: w.a1, a2: w.a2, b1: w.b1, b2: w.b2,
           x_cuts: xc, y_cuts: yc, I: DOMAIN_I,
+          // same omission as the DWBC button: the server has always accepted
+          // a seed on this endpoint, the client just never sent one
+          seed: currentSeed(),
         }),
       });
       const sd = await start.json();
@@ -1508,7 +1563,16 @@
       const startRes = await fetch("/api/exact/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ n, c_up: w.c1, c_down: w.c2, a1: w.a1, a2: w.a2, b1: w.b1, b2: w.b2 }),
+        // The seed box was not sent here at all, so the "exact sample"
+        // button -- the headline feature -- ignored it: the same seed gave a
+        // different configuration every time, while the box's tooltip
+        // promised reproducibility. The other exact path (fetchExactSample,
+        // used by the fluctuation view) did send one, which is why this went
+        // unnoticed; a sample drawn with no seed looks exactly as correct as
+        // one drawn with it.
+        body: JSON.stringify({ n, c_up: w.c1, c_down: w.c2, a1: w.a1,
+                               a2: w.a2, b1: w.b1, b2: w.b2,
+                               seed: currentSeed() }),
       });
       const startData = await startRes.json();
       if (!startData.ok) {
@@ -1614,7 +1678,9 @@
           const exactFrame = frameFromServerData(statusData.frame);
           const en = exactFrame.n;
           const esize = en + 1;
-          sampler = new SixVertexJS(en, w, Date.now() & 0xffffffff);
+          sampler = new SixVertexJS(
+            en, w, currentSeed() === null
+              ? (Date.now() & 0xffffffff) : (currentSeed() >>> 0));
           for (let i = 0; i < esize; i++) {
             for (let j = 0; j < esize; j++) {
               sampler.H[i * esize + j] = exactFrame.get(i, j);

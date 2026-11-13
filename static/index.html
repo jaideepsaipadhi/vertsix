@@ -167,7 +167,7 @@
           <div class="field">
             <label for="seed">seed <span class="hint">(blank = random)</span></label>
             <input type="text" id="seed" placeholder="e.g. 12345"
-                   title="Fixing the seed makes a sample reproducible: the same seed, n and weights give the same configuration." />
+                   title="Fixing the seed makes a sample reproducible. For exact samples, the same seed, n and weights give the same configuration. For the in-browser chain it fixes the trajectory from each reset, so the same seed, n, weights and number of sweeps give the same state." />
           </div>
           <p class="note" id="mixing-badge" style="display:none;padding-left:0.6em;"></p>
           <p class="note" id="slow-exact-note" style="display:none;color:#e8a05c;"></p>
@@ -348,6 +348,6 @@
   });
 </script>
 <script src="sixvertex.js?v=2"></script>
-<script src="draw.js?v=55"></script>
+<script src="draw.js?v=59"></script>
 </body>
 </html>

@@ -1760,8 +1760,31 @@ def test_seed_is_settable_and_reproduces():
     js = open(os.path.join(here, "..", "static", "draw.js")).read()
     assert 'id="seed"' in html, "no seed input in the UI"
     assert "currentSeed()" in js, "the client never reads the seed box"
-    assert js.count("seed: currentSeed()") >= 2, (
-        "seed is not passed on every sampling path")
+
+    # Every request that DRAWS something must carry a seed. This used to be
+    # written as js.count("seed: currentSeed()") >= 2, which froze one
+    # spelling of the intent rather than the intent: passing the seed through
+    # a parameter instead of calling currentSeed() inline at the fetch site
+    # broke the assertion while satisfying it better. (That mattered -- the
+    # fluctuation view has to send a DERIVED seed for its second sample, or
+    # it differences a sample against itself.) Check each request body
+    # instead, which is the thing actually being claimed.
+    import re as _re
+    sampling = ["/api/exact/start", "/api/domain/start", "/api/stochastic"]
+    for ep in sampling:
+        n_found = 0
+        for m in _re.finditer(_re.escape(f'fetch("{ep}"'), js):
+            body = js[m.start():m.start() + 900]
+            assert "seed:" in body, (
+                f"a request to {ep} is sent without a seed, so that path is "
+                f"not reproducible:\n{body[:400]}")
+            n_found += 1
+        assert n_found >= 1, f"no request to {ep} found in draw.js"
+
+    # and the in-browser chain, which is what the page runs by default, must
+    # read the box too rather than seeding itself from the clock
+    assert _re.search(r"new SixVertexJS\([^)]*localSeed", js), (
+        "the in-browser chain does not take its seed from the seed box")
 
 
 def test_model_switch_disables_rather_than_hides_and_restores_the_chain():
@@ -4329,3 +4352,282 @@ def test_the_monotone_region_boundary_is_real_in_both_directions():
         ce.in_monotone_region = real
 
     assert ce.in_monotone_region is real
+
+
+def test_the_same_seed_reproduces_the_same_sample_on_every_path():
+    """The seed box on the page promises reproducibility; nothing tested it.
+
+    Three different samplers sit behind it -- the stochastic single-sweep
+    sampler, the sequential transfer-matrix sampler for n <= MAX_EXACT_N, and
+    CFTP above it -- each with its own seeding path through the server, and
+    CFTP's runs in a worker thread. A seed that is dropped, or mixed with the
+    clock or with thread state, gives a tool whose output cannot be quoted in
+    a paper or checked by anyone else. The failure is invisible from a single
+    run: every sample looks fine on its own.
+
+    Checks all three: the same seed twice is identical, a different seed
+    differs, and no seed gives something different again.
+    """
+    import hashlib
+    import json as _json
+    import time
+
+    import server
+
+    c = server.app.test_client()
+
+    def dig(payload):
+        return hashlib.sha256(
+            _json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def stochastic(seed):
+        r = c.post("/api/stochastic",
+                   json={"n": 24, "b1": 0.3, "b2": 0.7, "seed": seed})
+        assert r.status_code == 200, r.data[:300]
+        body = r.get_json()
+        assert body["ok"], body
+        return dig(body["frame"])
+
+    def exact(seed, n, c1=2.0):
+        r = c.post("/api/exact/start",
+                   json={"n": n, "a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                         "c1": c1, "c2": c1, "seed": seed})
+        assert r.status_code == 200, r.data[:300]
+        job = r.get_json()["job_id"]
+        for _ in range(1200):
+            s = c.get(f"/api/exact/status/{job}").get_json()
+            if s.get("status") == "done":
+                return dig(s["frame"])
+            assert s.get("status") != "error", s
+            time.sleep(0.05)
+        raise AssertionError(f"job {job} did not finish")
+
+    paths = {
+        "stochastic": (stochastic, 7, 8),
+        # n <= MAX_EXACT_N: the sequential transfer-matrix sampler
+        "sequential": (lambda s: exact(s, 8), 5, 6),
+        # above it: CFTP in a worker thread
+        "cftp": (lambda s: exact(s, 18), 42, 43),
+    }
+    for name, (run, s1, s2) in paths.items():
+        a, b = run(s1), run(s1)
+        assert a == b, f"{name}: seed {s1} did not reproduce its own sample"
+        d = run(s2)
+        assert d != a, (
+            f"{name}: seeds {s1} and {s2} gave the same sample -- the seed is "
+            f"not reaching the sampler")
+        r1, r2 = run(None), run(None)
+        assert r1 != r2 or r1 != a, (
+            f"{name}: an omitted seed is not producing fresh randomness")
+
+
+def test_the_fluctuation_view_is_normalised_to_a_single_sample():
+    """The fluctuation view states a quantitative claim; check the arithmetic.
+
+    It shows (X - Y)/sqrt(2) for two INDEPENDENT exact samples, and the
+    comment in draw.js justifies the sqrt(2) by saying it "preserves the
+    variance of a single height function, so the field shown has the same
+    scale as the fluctuation of one sample about its mean". For iid X, Y,
+
+        Var((X - Y)/sqrt(2)) = (Var X + Var Y)/2 = Var X,
+
+    so the claim is exactly right -- but only if the two samples really are
+    independent. Differencing two samples that share a seed, or a sample
+    against itself, would give identically zero; differencing correlated ones
+    would understate the scale and make the lattice look calmer than it is.
+    Since the view exists to show the size of the fluctuations, a wrong factor
+    here is a wrong answer presented as a picture.
+
+    Checked by variance, not by eye: the ratio is taken variance-weighted,
+    which is what sets the displayed colour scale. Near-frozen sites are
+    excluded from the per-site spread, since a variance estimate there is
+    unstable (at n=8 the sites with Var < 0.02 gave ratios from 0.60 to 1.11,
+    while all 45 sites with Var > 0.05 fell within [0.955, 1.065]).
+    """
+    import math
+
+    import numpy as np
+    from sixvertex.exact import exact_sample
+
+    n, M = 6, 1500
+    w = dict(a1=1., a2=1., b1=1., b2=1., c1=2., c2=2.)
+    S = []
+    for s in range(2 * M):
+        e = exact_sample(n, seed=s, **w)
+        e = e[0] if isinstance(e, tuple) else e
+        S.append(np.asarray(e, dtype=float))
+    S = np.array(S)
+    X, Y = S[0::2], S[1::2]
+    F = (X - Y) / math.sqrt(2.0)
+
+    vx = X.var(axis=0, ddof=1)
+    vf = F.var(axis=0, ddof=1)
+    live = vx > 1e-9
+    assert live.sum() >= 10, "too few fluctuating sites to conclude"
+
+    weighted = vf[live].sum() / vx[live].sum()
+    assert abs(weighted - 1.0) < 0.05, (
+        f"the fluctuation field is not on the scale of a single sample: "
+        f"variance-weighted ratio {weighted:.4f}, expected 1")
+
+    big = vx > 0.05
+    if big.sum() >= 5:
+        r = vf[big] / vx[big]
+        assert abs(r.mean() - 1.0) < 0.05, (
+            f"per-site ratio away from 1 ({r.mean():.4f}) at the sites that "
+            f"actually fluctuate")
+
+    # the field must be centred: a nonzero mean would be a systematic offset
+    assert abs(float(F.mean())) < 0.05, (
+        f"the differenced field is not centred (mean {F.mean():.4f}) -- the "
+        f"two samples are not exchangeable")
+
+    # and differencing a sample against ITSELF must collapse, which is the
+    # failure mode the independence assumption is protecting against
+    assert np.allclose((X - X) / math.sqrt(2.0), 0.0)
+
+
+def test_the_fluctuation_view_uses_two_different_seeds():
+    """With a seed in the box, the fluctuation view used to show nothing.
+
+    It differences two exact samples, but both requests sent currentSeed(),
+    so a seeded run drew the SAME sample twice and the field was identically
+    zero -- a blank picture captioned "from two independent exact samples",
+    with the range printed as +/-0.00. A blank seed box was unaffected,
+    because the server then chose its own seed per request. So the bug only
+    appeared for someone who set a seed to make a figure reproducible, which
+    is the one group that would then quote the picture.
+
+    The second seed is now derived from the first rather than randomised, so
+    the view stays reproducible: the same seed gives the same pair of samples
+    and a bit-identical canvas (checked in a browser), a different seed gives
+    a different one.
+
+    Three things have to hold, and this checks all three.
+    """
+    import json, pathlib, shutil, subprocess
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "static" / "draw.js").read_text()
+
+    # 1. the handler must not send the same seed twice
+    i = src.index("const seedA = currentSeed();")
+    handler = src[i:i + 400]
+    assert handler.count("fetchExactSample") == 2, handler
+    assert "companionSeed(seedA)" in handler, (
+        "the second sample is not drawn from a derived seed:\n" + handler)
+
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+
+    # 2. companionSeed must never return its argument, including at the edges
+    j = src.index("function companionSeed")
+    body = src[j:src.index("\n  }", j) + 4]
+    seeds = [0, 1, 2, 7, 12345, 2 ** 31 - 2, 2 ** 31 - 1, 2 ** 32 - 1,
+             -1, -12345, 1013904223, 2147483647]
+    script = (body + "\nconst xs = " + json.dumps(seeds) + ";\n"
+              "console.log(JSON.stringify(xs.map(s => [s, companionSeed(s)])"
+              ".concat([[null, companionSeed(null)]])));")
+    out = subprocess.run([node, "-e", script], capture_output=True,
+                         text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    pairs = json.loads(out.stdout)
+    for s, t in pairs:
+        if s is None:
+            assert t is None, "a blank seed box must stay blank, not become 0"
+            continue
+        assert t is not None
+        assert t != s, f"companionSeed({s}) returned the seed itself"
+        assert 0 <= t < 2147483647, f"companionSeed({s}) = {t} out of range"
+
+    # 3. and the derived seeds must actually give different samples, or the
+    #    field is still zero however distinct the numbers look
+    import numpy as np
+    from sixvertex.exact import exact_sample
+
+    w = dict(a1=1., a2=1., b1=1., b2=1., c1=2., c2=2.)
+    same = 0
+    checked = [(s, t) for s, t in pairs if s is not None][:6]
+    for s, t in checked:
+        def draw(k):
+            e = exact_sample(8, seed=int(k) % (2 ** 31 - 1), **w)
+            return np.asarray(e[0] if isinstance(e, tuple) else e, dtype=int)
+        if np.array_equal(draw(s), draw(t)):
+            same += 1
+    assert same == 0, (
+        f"{same} of {len(checked)} derived seed pairs produced identical "
+        f"samples, so the fluctuation field would be zero for them")
+
+
+def test_the_in_browser_chain_honours_the_seed_box():
+    """The seed box promised more than it delivered.
+
+    Its tooltip said "the same seed, n and weights give the same
+    configuration", but the in-browser chain -- the path the page runs by
+    DEFAULT, before anyone presses "exact sample" -- seeded itself from
+    Date.now() and never read the box. So the promise held only for the
+    server-side samplers. Nothing looked wrong: every run produced a valid
+    configuration, just not the one the seed named.
+
+    The equilibration badge compares that chain against a shadow started from
+    the opposite corner, and judges equilibration by how far apart they are.
+    Driving both from one stream would make them agree for the wrong reason
+    and report equilibrium early, so the shadow takes a derived seed: distinct
+    from the chain's, and still reproducible.
+
+    Checked at both levels -- that draw.js wires the box in, and that the two
+    seeds really do drive different trajectories.
+    """
+    import json, pathlib, shutil, subprocess
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "static" / "draw.js").read_text()
+
+    i = src.index("const s0 = currentSeed();")
+    block = src[i:i + 400]
+    assert "new SixVertexJS(n, w, localSeed)" in block, block
+    assert "makeShadow(n, w, localSeed)" in block, (
+        "the shadow chain is not given the chain's seed to derive from:\n"
+        + block)
+    assert "companionSeed(baseSeed)" in src, (
+        "makeShadow does not derive an independent seed")
+
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+
+    j = src.index("function companionSeed")
+    companion = src[j:src.index("\n  }", j) + 4]
+    sv = (root / "static" / "sixvertex.js").read_text()
+
+    driver = sv + "\n" + companion + """
+const w = {a1:1, a2:1, b1:1, b2:1, c1:2, c2:2};
+function runFrom(seed) {
+  const s = new SixVertexJS(12, w, seed);
+  s.step(30);
+  return Array.from(s.H).join(",");
+}
+const s = 777;
+console.log(JSON.stringify({
+  same:      runFrom(s) === runFrom(s),
+  different: runFrom(s) !== runFrom(s + 1),
+  shadow:    runFrom(s) !== runFrom(companionSeed(s)),
+  companion: companionSeed(s),
+}));
+"""
+    out = subprocess.run([node, "-e", driver], capture_output=True,
+                         text=True, timeout=180)
+    assert out.returncode == 0, out.stderr[:400]
+    r = json.loads(out.stdout)
+
+    assert r["same"], (
+        "the same seed did not reproduce the same trajectory -- the chain is "
+        "not deterministic in its seed, so the box cannot promise anything")
+    assert r["different"], "two seeds gave the same trajectory"
+    assert r["companion"] != 777, "companionSeed returned the seed itself"
+    assert r["shadow"], (
+        "the shadow chain follows the same trajectory as the main one, so "
+        "the equilibration badge is comparing a chain with itself")
