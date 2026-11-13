@@ -431,10 +431,22 @@
   function faceBits(frame, i, j) {
     if (!faceInDomain(frame, i, j)) return null;
     if (arrowFrame && arrowFrame.n === frame.n) {
-      return { l: arrowFrame.h(i, j) === 1,
-               r: arrowFrame.h(i, j + 1) === 1,
-               b: arrowFrame.v(i, j) === 1,
-               t: arrowFrame.v(i + 1, j) === 1 };
+      // The arrows use the MATHEMATICAL convention: v[m,j] is the edge
+      // entering math row m from below, so "up" is increasing m. The canvas
+      // uses the opposite: row i is drawn at y=i and y grows downward, so
+      // increasing i goes DOWN the screen. Reading v[i,j] as the screen
+      // bottom edge therefore inverted the vertical direction, and adjacent
+      // cells referenced edges two rows apart: 19% of vertical segments did
+      // not meet, which is what made the path picture incoherent.
+      //
+      // Screen row i is math row m = n-1-i, so math-up is screen-up. The
+      // shared screen edge below row i is then v[m,j] from above and
+      // v[(n-1-(i+1))+1, j] = v[m,j] from below -- the same edge.
+      const m = arrowFrame.n - 1 - i;
+      return { l: arrowFrame.h(m, j) === 1,
+               r: arrowFrame.h(m, j + 1) === 1,
+               t: arrowFrame.v(m + 1, j) === 1,
+               b: arrowFrame.v(m, j) === 1 };
     }
     const tl = frame.get(i, j),     tr = frame.get(i, j + 1);
     const bl = frame.get(i + 1, j), br = frame.get(i + 1, j + 1);

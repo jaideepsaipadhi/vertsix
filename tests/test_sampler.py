@@ -1967,7 +1967,16 @@ def test_stochastic_paths_are_drawn_from_arrows_not_the_height_function():
     here = os.path.dirname(__file__)
     js = open(os.path.join(here, "..", "static", "draw.js")).read()
     assert "arrowFrame" in js, "the client never reads the arrows"
-    assert "arrowFrame.h(i, j)" in js, "paths are not drawn from the arrows"
+    # Check that faceBits reads the arrows, NOT the exact index expression.
+    # This assertion used to demand the literal "arrowFrame.h(i, j)", which
+    # froze the very indexing that inverted the vertical axis and broke the
+    # paths: it would have blocked the fix rather than caught the bug. The
+    # continuity invariant is pinned by
+    # test_drawn_paths_have_no_dangling_vertical_segments instead.
+    face = js[js.index("function faceBits"):]
+    face = face[:face.index("const tl =")]
+    assert "arrowFrame.h(" in face and "arrowFrame.v(" in face, \
+        "paths are not drawn from the arrows"
 
 
 def test_paths_are_black_on_white():
@@ -3408,3 +3417,64 @@ def test_the_island_core_is_a_filament_above_the_transition():
     # but means no single fit is the number. The test runs at the small sizes
     # for speed, so it pins only the gap.
     assert cold < 0.8, f"core still decaying fast at Delta=-3 (theta={cold:.2f})"
+
+
+# ------------------------------------------- the lattice-path picture itself
+def test_drawn_paths_have_no_dangling_vertical_segments():
+    """Every shared edge must be drawn from both sides, or paths break.
+
+    Gorin reported the stochastic lattice-path view as "nonsense" and guessed
+    a hidden coordinate flip. He was right. The arrows use the MATHEMATICAL
+    convention -- v[m,j] enters math row m from below, so "up" is increasing
+    m -- while the canvas draws row i at y=i with y growing downward, so
+    increasing i goes DOWN the screen. Reading v[i,j] as the screen-bottom
+    edge inverted the vertical direction, and the two cells meeting at a
+    screen edge then referenced edges two rows apart: 19.4% of vertical
+    segments did not meet (302/1560 at n=40). Horizontal segments were always
+    fine, which is why the picture looked plausible at a glance.
+
+    This replicates the drawing mapping in static/draw.js and asserts the
+    invariant that makes a path picture a path picture.
+    """
+    import numpy as np
+
+    from sixvertex.stochastic import sample
+
+    for n, b1, b2, seed in ((40, 0.8, 0.2, 7), (32, 0.3, 0.7, 11),
+                            (24, 0.5, 0.5, 3)):
+        h, v = sample(n, b1, b2, seed=seed)
+
+        def bits(i, j):
+            """faceBits for screen cell (i, j), mirroring draw.js."""
+            m = n - 1 - i
+            return dict(l=h[m, j], r=h[m, j + 1],
+                        t=v[m + 1, j], b=v[m, j])
+
+        # Shared vertical screen edge at x=j+1: right of (i,j), left of (i,j+1)
+        for i in range(n):
+            for j in range(n - 1):
+                assert bits(i, j)["r"] == bits(i, j + 1)["l"], (n, i, j)
+
+        # Shared horizontal screen edge at y=i+1: bottom of (i,j), top of (i+1,j)
+        for i in range(n - 1):
+            for j in range(n):
+                assert bits(i, j)["b"] == bits(i + 1, j)["t"], (n, i, j)
+
+
+def test_path_view_reads_the_arrows_with_the_row_flip():
+    """Pins the flip in the source, so the mapping cannot drift back.
+
+    The Python test above replicates draw.js; this checks the replication is
+    still faithful. Without `n - 1 - i` the vertical direction inverts again
+    and the paths come apart.
+    """
+    import re
+
+    src = open("static/draw.js").read()
+    body = src[src.index("function faceBits"):]
+    body = body[:body.index("const tl =")]
+    assert "arrowFrame.n - 1 - i" in body, \
+        "the screen-row to math-row flip is gone from faceBits"
+    # t must read the edge ABOVE the math row, b the one below it.
+    assert re.search(r"t:\s*arrowFrame\.v\(m \+ 1, j\)", body), body[-400:]
+    assert re.search(r"b:\s*arrowFrame\.v\(m, j\)", body), body[-400:]
