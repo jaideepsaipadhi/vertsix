@@ -3478,3 +3478,43 @@ def test_path_view_reads_the_arrows_with_the_row_flip():
     # t must read the edge ABOVE the math row, b the one below it.
     assert re.search(r"t:\s*arrowFrame\.v\(m \+ 1, j\)", body), body[-400:]
     assert re.search(r"b:\s*arrowFrame\.v\(m, j\)", body), body[-400:]
+
+
+def test_stochastic_height_and_arrows_are_sent_in_the_same_orientation():
+    """The two payloads must describe the same picture, not mirror images.
+
+    The path view draws the arrows with screen row i mapped to math row
+    n-1-i, so math-up is screen-up. The height view reads the height array
+    straight through frame.get, with payload row i drawn at y=i. If only one
+    of the two is flipped, the height view is a vertical mirror of the path
+    view of the SAME sample -- which is exactly what happened when the path
+    flip was first fixed: paths dense in the upper left, height bright in the
+    lower left.
+
+    The height function satisfies H(i+1,j) - H(i,j) = h[i,j] in the math
+    frame. With the rows reversed on the way out, that becomes a drop going
+    DOWN the screen, equal to the left-edge arrow of the screen cell. Pinning
+    that identity ties the two payloads together: drop either flip and this
+    fails.
+    """
+    import base64
+    import importlib
+
+    import numpy as np
+
+    server = importlib.import_module("server")
+    n = 24
+    body = server.app.test_client().post(
+        "/api/stochastic", json={"n": n, "b1": 0.8, "b2": 0.2, "seed": 4}
+    ).get_json()
+    f = body["frame"]
+    H = np.frombuffer(base64.b64decode(f["height_b64"]),
+                      dtype=np.int16).reshape(n + 1, n + 1)
+    h = np.frombuffer(base64.b64decode(f["h_b64"]),
+                      dtype=np.uint8).reshape(n, n + 1)
+
+    for i in range(n):
+        m = n - 1 - i
+        assert np.array_equal(H[i, :] - H[i + 1, :], h[m, :].astype(np.int64)), (
+            f"height and arrows disagree at screen row {i}: the two views "
+            f"would be vertical mirrors of each other")

@@ -282,7 +282,12 @@ def api_stochastic():
             return jsonify({"ok": False, "error": "seed must be an integer"}), 400
 
     h, v = _stochastic.sample(n, b1, b2, seed=seed)
-    H = _stochastic.height_function(h, v).astype(np.int16)
+    # Rows reversed so that math row 0 (the bottom, where no arrows enter) is
+    # sent as the LAST row and therefore drawn at the bottom of the canvas.
+    # The client draws row i at y=i with y growing downward, and the path view
+    # applies the same flip to the arrows; without this the height view came
+    # out as a vertical mirror of the path view of the very same sample.
+    H = _stochastic.height_function(h, v).astype(np.int16)[::-1]
     lo, hi = int(H.min()), int(H.max())
     # The arrows, not just the height function. This model's height function
     # steps by 0 or 1, whereas the DWBC one steps by exactly +-1, so the DWBC
