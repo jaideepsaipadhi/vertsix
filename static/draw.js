@@ -459,8 +459,8 @@
     if (l && t && b && r) return "a2";
     if (l && t && !b && !r) return "c1";
     if (!l && !t && b && r) return "c2";
-    if (!l && t && b && !r) return "b1";
-    if (l && !t && !b && r) return "b2";
+    if (!l && t && b && !r) return "b2";   // vertical through
+    if (l && !t && !b && r) return "b1";   // horizontal through
     // Not one of the six. Previously this fell through to "a1", which is how
     // the stochastic mislabelling stayed invisible: a wrong picture rather
     // than a loud one. Name it instead.

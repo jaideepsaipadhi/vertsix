@@ -85,9 +85,9 @@ def _face_weight(tl, tr, bl, br, w):
     if not l and not t and b and r:
         return w["c2"]
     if not l and t and b and not r:
-        return w["b1"]
+        return w["b2"]          # vertical through
     if l and not t and not b and r:
-        return w["b2"]
+        return w["b1"]          # horizontal through
     return 0.0
 
 

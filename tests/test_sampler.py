@@ -1629,8 +1629,15 @@ def test_colour_classifier_uses_the_corrected_convention():
                      if not ln.strip().startswith("//"))
     assert 'if (l && t && !b && !r) return "c1"' in code, (
         "(l,t) must be a c-type; the rendering classifier has the old labels")
-    assert 'if (!l && t && b && !r) return "b1"' in code, (
-        "(t,b) must be a b-type; the rendering classifier has the old labels")
+    # (t,b) must be a b-type. WHICH b is pinned separately, against the
+    # Gorin-Kenyon frozen corners, by
+    # test_vertex_labels_match_gorin_kenyon_via_the_frozen_corners. This
+    # assertion used to demand "b1" and so froze the label that turned out to
+    # be the wrong way round -- the same mistake as pinning the index
+    # expression in the path view.
+    import re as _re
+    m = _re.search(r'if \(!l && t && b && !r\) return "(b[12])"', code)
+    assert m, "(t,b) must be a b-type; the rendering classifier has odd labels"
 
 
 def test_fluctuation_normalisation_preserves_variance():
@@ -3084,7 +3091,12 @@ def test_browser_vertex_tally_matches_server_side_classification():
     its own types export gave a1 78, a2 78, b1 92, b2 625, c1 117, c2 77 over
     1067 cells. Classifying server-side over six samples gives 87.8, 87.8,
     90.0, 623.0, 109.2, 69.2 -- the same distribution, and in particular the
-    same heavy b2 frozen region, which is real and not a rendering fault.
+    same heavy frozen b region, which is real and not a rendering fault.
+
+    The b labels have since been swapped to match Gorin-Kenyon (see
+    test_vertex_labels_match_gorin_kenyon_via_the_frozen_corners), so the
+    heavy region is now called b1. Only the name moved: the counts, the
+    measure and the samples are identical, since #b1 = #b2 identically.
 
     This pins the server half, so a drift in the classification would show up
     even without a browser in the loop.
@@ -3106,8 +3118,8 @@ def test_browser_vertex_tally_matches_server_side_classification():
 
     assert sum(tot.values()) == runs * int(m.sum())
     assert all(tot[k] > 0 for k in ("a1", "a2", "b1", "b2", "c1", "c2")), dict(tot)
-    frac = tot["b2"] / sum(tot.values())
-    assert 0.50 < frac < 0.67, f"b2 fraction {frac:.3f} moved; expected ~0.58"
+    frac = tot["b1"] / sum(tot.values())
+    assert 0.50 < frac < 0.67, f"b1 fraction {frac:.3f} moved; expected ~0.58"
 
 
 # ------------------------------------------------ the CFTP stopping time T*
@@ -3691,3 +3703,76 @@ def test_label_swaps_are_invisible_in_the_measure():
     assert abs(Z(2., 2., 1., 3.) - Z(2., 2., 3., 1.)) < 1e-6, "b swap moved Z"
     assert abs(Z(1., 2.) / Z(2., 1.) - (1 / 2) ** n) < 1e-9, \
         "c swap did not scale Z by (c1/c2)^n"
+
+
+def test_vertex_labels_match_gorin_kenyon_via_the_frozen_corners():
+    """Anchors all six labels to a published convention, not to our own.
+
+    Gorin-Kenyon, arXiv:2408.14446, proof of Theorem 2.11, extends a domain
+    to the full square by adding "Type 1 vertices in all positions of the
+    bottom-right domain, Type 2 in the top-left, Type 3 in the bottom-left,
+    and Type 4 in the top-right", where Types 1..6 carry weights a1, a2, b1,
+    b2, c1, c2 and paths enter from the left of every row and leave the top
+    of every column. The four frozen corners of DWBC therefore identify
+    a1, a2, b1 and b2 outright.
+
+    We had b1 and b2 the wrong way round: our bottom-left corner was b2. The
+    swap is invisible in the measure -- #b1 = #b2 identically under DWBC, so
+    the partition function and even the samples are untouched -- and it was
+    caught only because the stochastic module, which defines b1 as the
+    HORIZONTAL continuation probability, disagreed with the vertex legend
+    about which vertex b1 is.
+    """
+    import collections
+
+    import numpy as np
+
+    from sixvertex.cftp_exact import cftp_sample
+    from sixvertex.domains import FACE
+
+    n = 48
+    w = dict(a1=1., a2=1., b1=1., b2=1., c1=1., c2=1.)
+    H = np.asarray(cftp_sample(n, w, master_seed=11)[0], int)
+
+    def cls(i, j):
+        tl, tr, bl, br = H[i, j], H[i, j + 1], H[i + 1, j], H[i + 1, j + 1]
+        bits = (int((bl - tl) == 1), int((tr - tl) == 1),
+                int((br - bl) == 1), int((br - tr) == 1))
+        return FACE.get(bits, "invalid")
+
+    k = 6
+    corner = {}
+    for name, (i0, j0) in (("top-left", (0, 0)), ("top-right", (0, n - k)),
+                           ("bottom-left", (n - k, 0)),
+                           ("bottom-right", (n - k, n - k))):
+        c = collections.Counter(cls(i, j)
+                                for i in range(i0, i0 + k)
+                                for j in range(j0, j0 + k))
+        corner[name] = c.most_common(1)[0][0]
+
+    assert corner["bottom-right"] == "a1", corner
+    assert corner["top-left"] == "a2", corner
+    assert corner["bottom-left"] == "b1", corner
+    assert corner["top-right"] == "b2", corner
+
+
+def test_the_stochastic_sliders_agree_with_the_vertex_legend():
+    """b1 means the same thing in both halves of the software.
+
+    sixvertex/stochastic.py defines b1 as the probability that a path
+    arriving horizontally continues horizontally, so raising b1 must produce
+    more vertices that the legend calls b1. It used to produce the opposite:
+    at b1 = 0.9 the colouring showed 1707 b2 faces against 13 b1 ones.
+    """
+    import collections
+
+    from sixvertex.domains import FACE
+    from sixvertex.stochastic import sample
+
+    n = 48
+    h, v = sample(n, 0.9, 0.1, seed=2)
+    c = collections.Counter(
+        FACE.get((int(h[i, j]), int(v[i + 1, j]), int(v[i, j]),
+                  int(h[i, j + 1])), "invalid")
+        for i in range(n) for j in range(n))
+    assert c["b1"] > 10 * max(c["b2"], 1), dict(c)

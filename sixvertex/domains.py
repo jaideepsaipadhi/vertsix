@@ -256,7 +256,13 @@ def extremal_heights(mask):
 
 FACE = {(0, 0, 0, 0): "a1", (1, 1, 1, 1): "a2",
         (1, 1, 0, 0): "c1", (0, 0, 1, 1): "c2",
-        (0, 1, 1, 0): "b1", (1, 0, 0, 1): "b2"}
+        (0, 1, 1, 0): "b2", (1, 0, 0, 1): "b1"}
+# b1 is the HORIZONTAL through-vertex and b2 the vertical one, per
+# Gorin-Kenyon arXiv:2408.14446: the proof of Theorem 2.11 fills the
+# bottom-left corner of DWBC with Type 3 (=b1) and the top-right with
+# Type 4 (=b2), and with paths entering from the left and leaving the
+# top, the bottom-left frozen corner is the horizontal one.
+
 
 
 def face_bits(H, i, j):
