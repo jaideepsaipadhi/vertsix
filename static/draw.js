@@ -794,6 +794,62 @@
     document.body.removeChild(a); URL.revokeObjectURL(url);
   }
 
+  function exportHeader(frame, what) {
+    // Self-describing exports.
+    //
+    // The two models write their height functions in DIFFERENT conventions
+    // -- DWBC steps by +-1 between neighbouring sites, the stochastic model
+    // by 0 or -1 -- and both landed in a file called
+    // vertsix_heights_n<N>.txt with nothing in it to say which. Reading one
+    // with the other's rule produces a plausible-looking lattice of wrong
+    // vertex types rather than an error: applying the DWBC face rule to a
+    // stochastic height export disagreed with that same sample's type
+    // export at 105 of 144 faces. These are the files someone puts in a
+    // paper, so they should carry their own provenance.
+    //
+    // Every line is prefixed with '#', which numpy.loadtxt skips by default,
+    // so the files still load exactly as before.
+    const n = frame.n;
+    const lines = [];
+    lines.push(`vertsix ${what} export, n = ${n}`);
+    if (isStochastic()) {
+      const sb1 = document.getElementById("sb1");
+      const sb2 = document.getElementById("sb2");
+      lines.push("model: stochastic six-vertex, step initial condition");
+      if (sb1 && sb2) {
+        const p1 = parseFloat(sb1.value), p2 = parseFloat(sb2.value);
+        lines.push(`b1 = ${p1}, b2 = ${p2}, ` +
+                   `Delta = ${((p1 + p2) / (2 * Math.sqrt(p1 * p2))).toFixed(6)}`);
+      }
+    } else {
+      const w = currentWeights();
+      lines.push(isDomain()
+        ? "model: six-vertex on a general domain (blocks removed)"
+        : "model: six-vertex, domain wall boundary conditions");
+      lines.push(`a1 = ${w.a1}, a2 = ${w.a2}, b1 = ${w.b1}, b2 = ${w.b2}, ` +
+                 `c1 = ${w.c1}, c2 = ${w.c2}`);
+    }
+    const sd = currentSeed();
+    lines.push(`seed: ${sd === null ? "not set (random)" : sd}`);
+    if (what === "height function") {
+      lines.push(`layout: ${n + 1} x ${n + 1} integers, row i from the TOP of ` +
+                 "the picture, tab separated");
+      lines.push(isStochastic()
+        ? "convention: neighbouring values differ by 0 or -1 (stochastic)"
+        : "convention: neighbouring values differ by +1 or -1 (DWBC)");
+      lines.push("note: the two models use DIFFERENT height conventions; " +
+                 "the face rule for one does not apply to the other");
+    } else {
+      lines.push(`layout: ${n} x ${n} codes, row i from the TOP of the ` +
+                 "picture, tab separated");
+      lines.push("codes: 1=a1 2=a2 3=b1 4=b2 5=c1 6=c2 " +
+                 "(Gorin-Kenyon convention; b1 is the horizontal " +
+                 "through-vertex), 0 = not a legal vertex, blank = outside " +
+                 "the domain");
+    }
+    return lines.map(l => `# ${l}`).join("\n") + "\n";
+  }
+
   function heightsAsText(frame) {
     // (N+1)x(N+1) integer table, tab separated -- loads with numpy.loadtxt
     const n = frame.n, rows = [];
@@ -802,7 +858,7 @@
       for (let j = 0; j <= n; j++) row.push(frame.get(i, j));
       rows.push(row.join("\t"));
     }
-    return rows.join("\n") + "\n";
+    return exportHeader(frame, "height function") + rows.join("\n") + "\n";
   }
 
   const TYPE_CODE = { a1: 1, a2: 2, b1: 3, b2: 4, c1: 5, c2: 6 };
@@ -826,7 +882,7 @@
       }
       rows.push(row.join("\t"));
     }
-    return rows.join("\n") + "\n";
+    return exportHeader(frame, "vertex types") + rows.join("\n") + "\n";
   }
 
   function draw() {

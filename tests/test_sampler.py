@@ -967,19 +967,53 @@ def test_extreme_weights_behave_correctly_or_are_refused():
     Z -> 1 and every sample should be that configuration. Getting 0 c-vertices
     here is the correct answer, not underflow damage.
     """
-    # Upward extremes must be refused, not silently wrong. Under the
-    # corrected labels c is the weight the DWBC measure concentrates on, so
-    # c=1e3 is still representable (Z ~ 2e216); the guard fires further out,
-    # and on the a/b directions much sooner.
+    # Upward extremes: handled correctly OR refused, never silently wrong.
+    #
+    # This block used to require a refusal for all three, which froze one
+    # branch of the contract the docstring states. The sampler now rescales
+    # and retries when a build fails, so b=1e3 at n=12 -- a model it can
+    # represent perfectly well once the weights are normalised -- is sampled
+    # instead of refused. The spread cases are still beyond reach and are
+    # still refused.
+    #
+    # Whichever branch a case takes, two things must hold: a refusal says
+    # why, and a sampler that IS returned must not have rounded any
+    # reachable state away. The second is the silent failure this test
+    # exists to exclude -- underflow can drop states while leaving the
+    # partition function finite and positive, so every sample drawn is a
+    # legal configuration from a measure on a smaller state space.
+    import numpy as _np
+
     for w in ({**UNIFORM, "c1": 1e30, "c2": 1e30},
               {**UNIFORM, "b1": 1e3,  "b2": 1e3},
               {**UNIFORM, "a1": 1e30, "a2": 1e30}):
         try:
-            ExactSampler(12, w)
+            s = ExactSampler(12, w)
         except RuntimeError as e:
-            assert "overflow" in str(e).lower()
+            assert "overflow" in str(e).lower() or "underflow" in str(e).lower(), e
         else:
-            raise AssertionError(f"{w} should have tripped the overflow guard")
+            assert s._underflowed == 0, (
+                f"{w}: the sampler was built with {s._underflowed} reachable "
+                f"states rounded away; it would draw from a truncated support")
+            H = _np.asarray(s.sample(_np.random.default_rng(0)), dtype=int)
+            assert H.shape == (13, 13)
+
+    # And a rescued build must be the SAME measure, not merely a valid one:
+    # b=1e3 needs the rescue at n=12, while the same model written at one
+    # tenth the scale does not. Same seed, same configuration, every time.
+    big = {**UNIFORM, "b1": 1e3, "b2": 1e3}
+    small = {k: v / 10.0 for k, v in big.items()}
+    s_big, s_small = ExactSampler(12, big), ExactSampler(12, small)
+    assert hasattr(s_big, "_z_scale"), (
+        "b=1e3 no longer needs rescaling at n=12; this check is not "
+        "exercising the path it claims to")
+    assert not hasattr(s_small, "_z_scale")
+    for k in range(25):
+        a = _np.asarray(s_big.sample(_np.random.default_rng(k)), dtype=int)
+        b = _np.asarray(s_small.sample(_np.random.default_rng(k)), dtype=int)
+        assert _np.array_equal(a, b), (
+            f"the rescued build disagrees with the same measure written at "
+            f"another scale (seed {k})")
 
     # Under the standard convention DWBC forces at least n c-vertices, and
     # the minimum is achieved exactly by the n! permutation matrices. Both
@@ -5040,3 +5074,259 @@ def test_a_removed_job_is_not_resurrected_by_its_own_worker():
             break
         time.sleep(0.05)
     assert st["status"] == "done", st
+
+
+def test_the_exact_sampler_does_not_refuse_a_model_because_of_its_scale():
+    """The Boltzmann measure is invariant under scaling all six weights, so
+    the sampler must be too -- including when the partition function stops
+    being representable.
+
+    The backward pass accumulates products of face weights, so Z grows like
+    lambda^(n^2). Past float range the build produced inf and the sampler
+    raised "numerical overflow/underflow ... rescale the weights (the model
+    is invariant under a common rescaling of all six weights)". The message
+    was right about the invariance, which is exactly why the refusal was
+    wrong: w and lambda*w are the SAME distribution, so the scale the caller
+    typed decided whether they got a sample or an error. At n=12 all six
+    weights at 100 worked and at 140 raised -- for the uniform measure.
+
+    Now the build normalises and retries, and Z is reported in the original
+    scale, which may be inf or 0. That is the honest answer: the measure is
+    ordinary, the number simply is not representable. Nothing about sampling
+    depends on being able to name it.
+
+    The retry runs ONLY after a direct build has failed, so every case that
+    already worked is untouched -- asserted below by checking that the
+    ordinary weights never take the rescaled path.
+    """
+    import math
+
+    import numpy as np
+    from scipy.stats import chi2 as chi2_dist
+
+    from sixvertex.exact import ExactSampler
+
+    n = 6
+    base = dict(a1=0.7, a2=1.3, b1=0.5, b2=1.6, c1=1.1, c2=2.3)
+    cfgs, probs, _ = exact_distribution(n, base)
+    key = {np.asarray(c, dtype=int).tobytes(): i for i, c in enumerate(cfgs)}
+
+    def law(lam):
+        w = {k: v * lam for k, v in base.items()}
+        s = ExactSampler(n, w)
+        rng = np.random.default_rng(5)
+        N = 4000
+        cnt = np.zeros(len(cfgs))
+        for _ in range(N):
+            H = np.asarray(s.sample(rng), dtype=int)
+            k = key.get(H.tobytes())
+            assert k is not None, f"lam={lam}: sampler left the state space"
+            cnt[k] += 1
+        e = probs * N
+        live = e >= 5
+        chi = float((((cnt - e) ** 2) / e)[live].sum())
+        return s, cnt, chi, int(live.sum()) - 1
+
+    # unscaled: must NOT take the retry path
+    s1, _, chi1, dof1 = law(1.0)
+    assert not hasattr(s1, "_z_scale"), (
+        "ordinary weights took the rescaling path; the retry is supposed to "
+        "run only after a direct build has failed")
+    assert chi2_dist.sf(chi1, dof1) > 1e-3, chi1
+    assert math.isfinite(s1.partition_function())
+
+    # scales whose Z is past float range in both directions
+    for lam in (1e10, 1e-10, 1e30):
+        s, cnt, chi, dof = law(lam)
+        assert hasattr(s, "_z_scale"), (
+            f"lam={lam} did not need rescaling; pick a harsher scale or this "
+            f"test is not exercising the path it claims to")
+        # the direct build really would have failed: that is why we are here
+        raw = float(sum(s.B[0].values()))
+        assert math.isfinite(raw) and raw > 0, raw
+        z = s.partition_function()
+        assert z == math.inf or z == 0.0, (
+            f"lam={lam}: Z={z}, expected the original-scale value to be "
+            f"unrepresentable")
+        assert chi2_dist.sf(chi, dof) > 1e-3, (
+            f"lam={lam}: the rescaled build does not reproduce the measure "
+            f"(chi2={chi:.1f} on {dof} dof)")
+
+    # and the measure must be the SAME measure, not merely a valid one
+    _, c1, _, _ = law(1.0)
+    for lam in (1e10, 1e-10):
+        _, c2, _, _ = law(lam)
+        assert np.array_equal(c1, c2), (
+            f"lam={lam} gave a different sample sequence from the same seed; "
+            f"rescaling changed the conditional probabilities")
+
+
+def test_the_two_models_export_different_height_conventions_and_say_so():
+    """Exported data must carry enough provenance to be read back.
+
+    Both models write a file called vertsix_heights_n<N>.txt, and their
+    height functions do not mean the same thing: under DWBC neighbouring
+    values differ by +-1, under the stochastic model by 0 or -1. Nothing in
+    the file said which. Reading one with the other's face rule does not
+    error -- it yields a full lattice of plausible, wrong vertex types.
+    Measured on one stochastic sample, applying the DWBC rule to its own
+    height export disagreed with its own type export at 105 of 144 faces.
+
+    These are the files that end up in a paper, so they now carry the model,
+    the weights (or b1, b2 and Delta), the seed, the row order and the
+    convention. Every line is '#'-prefixed, which numpy.loadtxt skips, so
+    they still load exactly as before.
+    """
+    import json
+    import pathlib
+    import shutil
+    import subprocess
+
+    import numpy as np
+
+    # the underlying fact the header exists to record
+    from sixvertex import stochastic as st
+    from sixvertex.exact import exact_sample
+
+    e = exact_sample(8, a1=1., a2=1., b1=1., b2=1., c1=1., c2=1., seed=3)
+    Hd = np.asarray(e[0] if isinstance(e, tuple) else e, dtype=int)
+    h, v = st.sample(8, 0.8, 0.2, seed=3)
+    Hs = st.height_function(h, v).astype(int)
+
+    dsteps = set(np.unique(np.diff(Hd, axis=0)).tolist())
+    ssteps = set(np.unique(np.diff(Hs, axis=0)).tolist())
+    assert dsteps <= {-1, 1}, dsteps
+    assert ssteps <= {0, 1, -1} and ssteps != dsteps, (
+        f"the two height conventions are no longer different (DWBC {dsteps}, "
+        f"stochastic {ssteps}); if they have been unified, the header's "
+        f"warning is now misleading and should change")
+
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "static" / "draw.js").read_text()
+    body = _js_function_body(src, "function exportHeader(")
+
+    # minimal stubs for the few things the header reads
+    driver = """
+    const MODEL = {value: "__MODEL__"};
+    const SLIDERS = {sb1: {value: "0.8"}, sb2: {value: "0.2"}, seed: {value: "77"}};
+    const document = {getElementById: (id) => id === "model" ? MODEL
+                                               : (SLIDERS[id] || null)};
+    function isStochastic() { return MODEL.value === "stochastic"; }
+    function isDomain() { return MODEL.value === "domain"; }
+    function currentWeights() {
+      return {a1: 0.7, a2: 1.3, b1: 0.5, b2: 1.6, c1: 1.1, c2: 2.3};
+    }
+    function currentSeed() {
+      const v = SLIDERS.seed.value.trim();
+      return v === "" ? null : parseInt(v, 10);
+    }
+    function exportHeader(frame, what) __BODY__
+    const frame = {n: 12};
+    console.log(JSON.stringify({
+      heights: exportHeader(frame, "height function"),
+      types: exportHeader(frame, "vertex types"),
+    }));
+    """
+    out = {}
+    for model in ("dwbc", "stochastic"):
+        script = (driver.replace("__BODY__", body)
+                        .replace("__MODEL__", model))
+        r = subprocess.run([node, "-e", script], capture_output=True,
+                           text=True, timeout=120)
+        assert r.returncode == 0, r.stderr[:500]
+        out[model] = json.loads(r.stdout)
+
+    for model, hdrs in out.items():
+        for what, text in hdrs.items():
+            lines = [ln for ln in text.splitlines() if ln.strip()]
+            assert lines, (model, what)
+            assert all(ln.startswith("#") for ln in lines), (
+                f"{model}/{what}: a header line is not comment-prefixed, so "
+                f"numpy.loadtxt would try to parse it:\\n{text}")
+            assert "seed: 77" in text, f"{model}/{what} does not record the seed"
+            assert "n = 12" in text, f"{model}/{what} does not record n"
+
+    # the convention line must distinguish the models, which is the point
+    dh = out["dwbc"]["heights"]
+    sh = out["stochastic"]["heights"]
+    assert "+1 or -1" in dh and "DWBC" in dh, dh
+    assert "0 or -1" in sh and "stochastic" in sh, sh
+    assert dh != sh
+
+    # and each must record the parameters needed to reproduce the figure
+    assert "a1 = 0.7" in dh and "c2 = 2.3" in dh, dh
+    assert "b1 = 0.8" in sh and "b2 = 0.2" in sh, sh
+
+    # the type export must name the code map and the naming convention it uses
+    for model in out:
+        t = out[model]["types"]
+        assert "1=a1" in t and "6=c2" in t, t
+        assert "Gorin-Kenyon" in t, (
+            "the type codes do not say which vertex naming convention they "
+            "follow, which is the thing that was wrong once already")
+
+
+def test_states_rounded_away_are_accounted_for_rather_than_ignored_or_feared():
+    """Underflow in the backward pass drops states; the question is whether
+    the mass they carried mattered.
+
+    A row with reachable successors whose backward value rounds to zero has
+    underflowed, not been proved unreachable, and dropping it shrinks the
+    support. Nothing downstream notices: the partition function stays finite
+    and positive, and every configuration drawn is still legal. So the drop
+    has to be measured where it happens.
+
+    Measuring it both ways matters. Treating ANY drop as fatal was the first
+    attempt here, and it refused cases that are correct to hundreds of
+    digits: at a1=1e-20, n=12 over a thousand rows round away, but each held
+    less than DBL_MIN against a total of order one, so the bound on the lost
+    mass is about 1e-305 -- states whose relative probability the enumerator
+    in these tests cannot represent either. Refusing those would repeat the
+    error of refusing a model for the scale it happened to be typed in.
+
+    So the bound count * DBL_MIN is weighed against the retained total, and
+    only a loss that could be measured is refused. Both sides are exercised
+    below, because a threshold that nothing ever crosses is not a check.
+    """
+    import numpy as np
+
+    from sixvertex.exact import ExactSampler
+
+    DBL_MIN = 2.2250738585072014e-308
+    U = dict(a1=1., a2=1., b1=1., b2=1., c1=1., c2=1.)
+
+    # Negligible: many rows drop, but the total is of order one.
+    accepted = 0
+    for key, tiny in (("a1", 1e-20), ("a1", 1e-40), ("b1", 1e-60)):
+        w = {**U, key: tiny}
+        s = ExactSampler(12, w)
+        assert s._underflowed > 0, (
+            f"{key}={tiny} no longer underflows at n=12; this case is not "
+            f"exercising the accounting it claims to")
+        total = float(sum(s.B[0].values()))
+        assert total > 0 and np.isfinite(total)
+        assert s._underflowed * DBL_MIN <= 1e-9 * total
+        H = np.asarray(s.sample(np.random.default_rng(0)), dtype=int)
+        assert H.shape == (13, 13)
+        accepted += 1
+    assert accepted == 3
+
+    # Significant: the retained total is itself near the underflow floor, so
+    # the dropped mass is no longer negligible against it.
+    w = {k: 3e-9 for k in U}
+    w["a1"] = 3e-9 * 1e-40
+    try:
+        ExactSampler(6, w)
+    except RuntimeError as e:
+        msg = str(e).lower()
+        assert "underflow" in msg and "negligible" in msg, e
+    else:
+        raise AssertionError(
+            "a build whose dropped mass is comparable to its partition "
+            "function was accepted; the sampler would draw from a measurably "
+            "truncated support")

@@ -131,6 +131,13 @@ class ExactSampler:
         self._build()
 
     def _build(self):
+        self._build_tables()
+        self._check_range()
+
+    def _build_tables(self):
+        """Forward transitions and the backward values, for self.w as it
+        currently stands. Separated from the range check so the check can
+        rebuild on rescaled weights without re-entering itself."""
         n, w = self.n, self.w
         self.trans = []
         for i in range(n):
@@ -158,34 +165,137 @@ class ExactSampler:
         B = [dict() for _ in range(n + 1)]
         for r in self.levels[n]:
             B[n][r] = 1.0
+        # A row that HAS reachable successors but whose backward value
+        # rounds to zero has not been shown to be unreachable -- it has
+        # underflowed, and dropping it removes configurations from the
+        # support. No later check notices: the partition function stays
+        # finite and positive and every sample drawn is a legal
+        # configuration.
+        #
+        # But this is only a problem if the mass lost is significant, and
+        # usually it is not: a dropped value is below DBL_MIN, so the loss is
+        # bounded by count * 2.2e-308 against a retained total that is
+        # normally of order one. At a1=1e-20, n=12 that bound is around
+        # 1e-306 -- states whose probability is ~1e-240 relative, which the
+        # enumerator in the tests cannot represent either. Refusing those
+        # would be refusing work that is correct to hundreds of digits, the
+        # same error as refusing a model for the scale it was typed in.
+        #
+        # So count them and let _check_range weigh the bound against the
+        # total, rather than treating any drop as fatal.
+        self._underflowed = 0
         for i in range(n - 1, -1, -1):
             for r1, (targets, tws) in self.trans[i].items():
                 tot = 0.0
+                viable = False
                 for r2, tw in zip(targets, tws):
                     bv = B[i + 1].get(r2)
                     if bv:
+                        viable = True
                         tot += tw * bv
                 if tot > 0:
                     B[i][r1] = tot
+                elif viable:
+                    self._underflowed += 1
         self.B = B
 
+    _DBL_MIN = 2.2250738585072014e-308
+
+    def _check_lost_mass(self, total):
+        """Refuse only when the states rounded away could have mattered.
+
+        Each dropped backward value was below DBL_MIN, so the mass lost is at
+        most count * DBL_MIN. Compared against the retained total that is
+        normally about 1e-306 -- far below any threshold anyone could
+        measure. It only becomes significant when the total is itself near
+        the underflow floor, and then the measure really is being truncated.
+        """
+        if not self._underflowed:
+            return
+        if not np.isfinite(total) or total <= 0.0:
+            return                      # the scale guard below handles this
+        lost = self._underflowed * self._DBL_MIN
+        if lost > 1e-9 * total:
+            raise RuntimeError(
+                "numerical underflow in the exact sampler's backward pass: "
+                f"{self._underflowed} reachable states were rounded away and "
+                f"the mass they carried (at most {lost:.3g}) is not "
+                f"negligible against the partition function ({total:.3g}), "
+                "so the sampler would draw from a measurably truncated "
+                "support. The spread between the weights at this n is the "
+                "cause, not their overall scale, so rescaling does not help."
+            )
+
+    def _check_range(self):
         # Numerical safety. The backward pass accumulates products of face
         # weights, so its magnitude grows/shrinks roughly like w^(n^2). At
         # n=14 with the UI's weight range [0.1, 3.0] the extremes are about
         # 1e+115 and 1e-175, comfortably inside float64 (~1e+/-308) -- but
         # that headroom disappears quickly if MAX_EXACT_N is ever raised.
         # Fail loudly rather than return silently-wrong probabilities.
-        total = self.partition_function()
+        total = float(sum(self.B[0].values()))
+        self._check_lost_mass(total)
         if not np.isfinite(total) or total <= 0.0:
-            raise RuntimeError(
-                "numerical overflow/underflow in the exact sampler's backward "
-                f"pass (partition function = {total}). Reduce n, or rescale "
-                "the weights (the model is invariant under a common rescaling "
-                "of all six weights)."
-            )
+            # Refusing here was refusing a model we can sample perfectly
+            # well. The message itself said the cure -- "rescale the weights
+            # (the model is invariant under a common rescaling of all six
+            # weights)" -- and that invariance is exactly why the refusal was
+            # unnecessary: w and lambda*w are the SAME distribution, so the
+            # scale the caller happened to type decided whether they got a
+            # sample or an error. At n=12 all six weights at 100 worked and
+            # at 140 raised, for one Boltzmann measure (the uniform one).
+            #
+            # So normalise and rebuild. This runs only when the direct build
+            # has already failed, so every case that worked before is
+            # untouched, bit for bit, including its random stream.
+            #
+            # Z is reported in the ORIGINAL scale, which may legitimately be
+            # inf: Z(lambda*w) = lambda^(n^2) Z(w), and the true number can
+            # be past float range even though the measure is perfectly
+            # ordinary. Sampling no longer depends on being able to name it.
+            import math as _math
+
+            logs = [_math.log(self.w[k])
+                    for k in ("a1", "a2", "b1", "b2", "c1", "c2")]
+            lam = _math.exp(sum(logs) / 6.0)          # geometric mean
+            if not (lam > 0.0) or not np.isfinite(lam) or lam == 1.0:
+                raise RuntimeError(
+                    "numerical overflow/underflow in the exact sampler's "
+                    f"backward pass (partition function = {total}), and the "
+                    "weights cannot be rescaled to recover it. Reduce n."
+                )
+            # lambda^(n^2) is itself often past float range -- that is the
+            # whole reason we are here -- and ** raises OverflowError rather
+            # than returning inf. inf (or 0) is the honest value for Z; it
+            # must not stop the sampler, which never looks at this number.
+            try:
+                self._z_scale = lam ** (self.n * self.n)
+            except OverflowError:
+                self._z_scale = _math.inf if lam > 1.0 else 0.0
+            self.w = {k: v / lam for k, v in self.w.items()}
+            self._build_tables()
+            total = float(sum(self.B[0].values()))
+            self._check_lost_mass(total)
+            if not np.isfinite(total) or total <= 0.0:
+                raise RuntimeError(
+                    "numerical overflow/underflow in the exact sampler's "
+                    f"backward pass (partition function = {total}) even after "
+                    "rescaling the weights to unit geometric mean. The spread "
+                    "between the weights, not their scale, is too large at "
+                    "this n. Reduce n."
+                )
 
     def partition_function(self) -> float:
-        return float(sum(self.B[0].values()))
+        """Z for the weights as given.
+
+        When the backward pass had to be rescaled to stay inside float range,
+        the tables hold Z for the normalised weights and this undoes the
+        change of scale: Z(lambda*w) = lambda^(n^2) Z(w). That product can
+        itself be inf, which is the honest answer -- the measure is fine, the
+        number is simply not representable.
+        """
+        z = float(sum(self.B[0].values()))
+        return z * getattr(self, "_z_scale", 1.0)
 
     def sample(self, rng) -> np.ndarray:
         n = self.n
