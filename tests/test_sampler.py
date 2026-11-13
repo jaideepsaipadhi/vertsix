@@ -3622,3 +3622,72 @@ console.log(JSON.stringify(Array.from(t)));
         chi += (a - ea) ** 2 / ea + (b - eb) ** 2 / eb
         dof += 1
     assert chi2_dist.sf(chi, dof) > 0.001, f"chi2 {chi:.1f} on {dof} dof"
+
+
+def test_partition_function_at_the_free_fermion_point():
+    """A second exactly-solvable anchor, independent of the ASM one.
+
+    At a=b=1, c=sqrt(2) the model is free-fermionic (Delta=0) and the
+    domain-wall partition function is 2^(n(n-1)/2) * sqrt(2)^n. The all-ones
+    point (Delta=1/2, Z = the ASM numbers) only probes one Delta; this pins a
+    second, and it is sensitive to the c weights, which the ASM check is not.
+    """
+    import math
+
+    from sixvertex.exact import ExactSampler
+
+    r2 = math.sqrt(2)
+    for n in range(1, 8):
+        Z = ExactSampler(n, dict(a1=1., a2=1., b1=1., b2=1.,
+                                 c1=r2, c2=r2)).partition_function()
+        want = 2 ** (n * (n - 1) / 2) * r2 ** n
+        assert abs(Z / want - 1) < 1e-9, (n, Z, want)
+
+
+def test_c1_is_the_horizontal_to_vertical_turn():
+    """Fixes the c1/c2 naming against the definition in the book draft.
+
+    Gorin-Ferrari-Borodin, Introduction to integrable probability, Chapter 7:
+    "Type c1 is the horizontal-to-vertical turn, and c2 the
+    vertical-to-horizontal turn", with paths running up and right. So c1 is
+    the vertex whose LEFT and TOP edges carry path, and c2 the one whose
+    BOTTOM and RIGHT edges do.
+
+    This matters because the book colours the six types separately (Figure
+    7.15) and because its left panel uses c1 != c2. It cannot be checked
+    against sampled data: see the next test.
+    """
+    from sixvertex.exact import _face_weight
+
+    w = {k: 0.0 for k in ("a1", "a2", "b1", "b2", "c1", "c2")}
+    w["c1"] = 11.0
+    w["c2"] = 13.0
+    # corner heights with left and top edges occupied: l=(bl-tl)=1, t=(tr-tl)=1
+    assert _face_weight(0, 1, 1, 1, w) == 11.0, "c1 is not the left/top turn"
+    # bottom and right occupied: b=(br-bl)=1, r=(br-tr)=1
+    assert _face_weight(0, 0, 0, 1, w) == 13.0, "c2 is not the bottom/right turn"
+
+
+def test_label_swaps_are_invisible_in_the_measure():
+    """Why the naming above has to come from the book and not from data.
+
+    Under domain-wall boundary conditions #b1 = #b2 identically, so swapping
+    b1 and b2 leaves even the partition function unchanged. And #c1 - #c2 = n
+    identically, so swapping c1 and c2 multiplies every configuration's
+    weight by the same constant (c1/c2)^n: Z changes by that factor, but the
+    probability measure does not move at all.
+
+    So a wrong c1/c2 or b1/b2 label would be undetectable in any sample, and
+    would show up only as two exchanged colours in a figure.
+    """
+    from sixvertex.exact import ExactSampler
+
+    n = 4
+
+    def Z(c1, c2, b1=1.0, b2=1.0):
+        return ExactSampler(n, dict(a1=1., a2=1., b1=b1, b2=b2,
+                                    c1=c1, c2=c2)).partition_function()
+
+    assert abs(Z(2., 2., 1., 3.) - Z(2., 2., 3., 1.)) < 1e-6, "b swap moved Z"
+    assert abs(Z(1., 2.) / Z(2., 1.) - (1 / 2) ** n) < 1e-9, \
+        "c swap did not scale Z by (c1/c2)^n"
