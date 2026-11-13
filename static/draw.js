@@ -203,6 +203,11 @@
   // (~18 s per sample at n = 128 on the reference machine, growing like n^4).
   const CFTP_SLOW_N = 128;
 
+  // And below this Delta the coalescence time climbs steeply whatever n is:
+  // the measured counts are flat down to about -5 and then take off (at
+  // n = 16: 256 sweeps at Delta = -3, 16384 at -15, past 2^16 by -25).
+  const CFTP_SLOW_DELTA = -5;
+
   function isExactSafe(w, n) {
     // Small n: the sequential transfer-matrix sampler handles any weights.
     // Large n: CFTP, which is monotone exactly on c1c2 >= a1a2 and
@@ -303,27 +308,52 @@
     // against the predicate over 133k random points inside the region: the
     // largest Delta seen was 0.4887.)
     //
-    // Re-measured in the corrected region, Delta turns out not to drive the
-    // cost at all -- at n = 48 the median sweeps to coalescence are 4096 at
-    // Delta = +0.5, 0.0 and -3.0 alike. n drives it: median sweeps 2048,
-    // 4096, 16384, 32768 at n = 32, 48, 64, 96, i.e. about n^2, and each
-    // sweep is itself n^2, giving ~n^4 overall (measured 0.17s, 0.45s, 1.45s
-    // and 6.3s per sample at those n). So the warning keys on n.
+    // BOTH n and Delta drive the cost, and an earlier version of this
+    // warning said otherwise. It keyed on n alone and told the user
+    // "Delta will not help", from measurements taken only at
+    // Delta = +0.5, 0.0 and -3.0 -- which all sit in the flat part of the
+    // curve, so the conclusion held exactly over the range it was drawn
+    // from and nowhere else.
+    //
+    // Median sweeps to coalescence, a = b = 1, c set from Delta:
+    //
+    //        Delta   +0.5    -3     -6    -10    -15    -20
+    //   n=10            64     64    256    512   4096   4096
+    //   n=16           256    256   1024   2048  16384  >2^16
+    //   n=24          2048   1024   4096  >2^16  >2^16  >2^16
+    //
+    // Flat down to about Delta = -5, then it climbs steeply, and the two
+    // factors compound: n=24 at Delta=-10 already exceeds the budget that
+    // n=96 meets at Delta=0. So the warning fires on either, and says which
+    // one is responsible -- telling someone at Delta = -25 to reduce n was
+    // advice that would not have helped them.
     const A = w.a1 * w.a2, B = w.b1 * w.b2, C = w.c1 * w.c2;
     const dlt = (A + B - C) / (2 * Math.sqrt(A * B));
     const slowNote = document.getElementById("slow-exact-note");
     if (slowNote) {
-      const risky = safe && n > CFTP_SLOW_N;
+      const bigN = n > CFTP_SLOW_N;
+      const deepDelta = dlt < CFTP_SLOW_DELTA;
+      const risky = safe && (bigN || deepDelta);
       slowNote.style.display = risky ? "block" : "none";
       if (risky) {
+        const why = deepDelta && bigN
+          ? `n = ${n} and \u0394 = ${dlt.toFixed(2)} both push this up`
+          : deepDelta
+            ? `\u0394 = ${dlt.toFixed(2)} is deep in the antiferroelectric ` +
+              `phase, where the two chains take far longer to meet`
+            : `n = ${n} is large`;
+        const advice = deepDelta
+          ? `Raise c\u2081c\u2082 toward a\u2081a\u2082 and b\u2081b\u2082 ` +
+            `(less negative \u0394), or reduce n.`
+          : `Reduce n if it stalls.`;
         slowNote.textContent =
-          `Exact sampling at n = ${n} is valid but slow. CFTP's cost is set ` +
-          `by n, not by \u0394: the sweeps needed for the two chains to meet ` +
-          `grow about like n\u00b2, and each sweep is another n\u00b2, so ` +
-          `the total grows roughly like n\u2074. On the reference machine ` +
-          `that is about 6 s per sample at n = 96, a minute or two by ` +
-          `n = 200, and well over ten minutes by n = 400. Reduce n if it ` +
-          `stalls; \u0394 will not help.`;
+          `Exact sampling is valid here but slow: ${why}. The sweeps needed ` +
+          `for the two chains to meet grow about like n\u00b2 while \u0394 ` +
+          `stays above about \u22125, and each sweep is another n\u00b2 ` +
+          `(~6 s per sample at n = 96, minutes by n = 200); below ` +
+          `\u0394 \u2248 \u22125 they climb steeply on top of that \u2014 ` +
+          `at n = 16 the count goes 256, 1024, 2048, 16384 at ` +
+          `\u0394 = \u22123, \u22126, \u221210, \u221215. ${advice}`;
       }
     }
     btnExact.style.opacity = safe ? "1" : "0.4";

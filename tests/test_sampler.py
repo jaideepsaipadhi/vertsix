@@ -4192,16 +4192,40 @@ def test_delta_is_bounded_by_one_half_inside_the_monotone_region():
     assert in_monotone_region(eq)
     assert abs(delta_of(eq) - 0.5) < 1e-12
 
-    # and the shipped warning must not be gated on Delta any more
+    # Any Delta threshold the UI uses must be REACHABLE inside the region.
+    #
+    # This block used to assert that the warning was not gated on Delta at
+    # all, and that its trigger expression mentioned CFTP_SLOW_N by name. The
+    # first was the wrong lesson drawn from the original bug and the second
+    # froze a spelling: the warning now fires on a deep-Delta condition too,
+    # which is correct (below about -5 the coalescence time climbs steeply),
+    # and the trigger reads `safe && (bigN || deepDelta)`. Both assertions
+    # blocked that, for no reason connected to the fault they came from.
+    #
+    # The fault was a threshold of Delta > 2, which the bound proved above
+    # makes unreachable, so the warning could never fire. That is what to
+    # check: every Delta threshold in the file must be <= 1/2.
     import pathlib
+    import re as _re
     src = (pathlib.Path(__file__).resolve().parent.parent
            / "static" / "draw.js").read_text()
-    i = src.index("const risky =")
-    trigger = src[i:src.index(";", i)]
-    assert "dlt" not in trigger, (
-        f"the slow-sampling warning is gated on Delta again ({trigger!r}); "
-        f"inside the region Delta <= 1/2, so such a threshold cannot fire")
-    assert "CFTP_SLOW_N" in trigger, trigger
+    code = "\n".join(ln for ln in src.splitlines()
+                      if not ln.strip().startswith("//"))
+
+    thresholds = []
+    for m in _re.finditer(r"CFTP_SLOW_DELTA\s*=\s*(-?[\d.]+)", code):
+        thresholds.append(float(m.group(1)))
+    for m in _re.finditer(r"dlt\s*([<>]=?)\s*(-?[\d.]+)", code):
+        thresholds.append(float(m.group(2)))
+    assert thresholds, "no Delta threshold found in draw.js"
+    for t in thresholds:
+        assert t <= 0.5 + 1e-12, (
+            f"draw.js compares Delta against {t}, which is unreachable "
+            f"inside the monotone region (Delta <= 1/2 there), so that "
+            f"branch can never fire")
+
+    # and the warning must still consider n, which is the other factor
+    assert "CFTP_SLOW_N" in code
 
 
 def test_all_five_vertex_label_tables_agree():
@@ -5616,3 +5640,72 @@ def test_the_svg_export_is_independent_of_the_camera():
     i = code.index("btnSave.addEventListener")
     png_handler = code[i:i + 600]
     assert "toDataURL" in png_handler or "toBlob" in png_handler, png_handler[:300]
+
+
+def test_delta_drives_coalescence_too_not_only_n():
+    """A correction to a claim this project made earlier today.
+
+    The slow-sampling warning was rewritten to key on n, with the text
+    "CFTP's cost is set by n, not by Delta" and the advice "Delta will not
+    help". That came from measurements at Delta = +0.5, 0.0 and -3.0, where
+    the sweep count really is flat -- and all three sit inside the flat part
+    of the curve, so the conclusion was exactly right over the range it was
+    drawn from and wrong everywhere else.
+
+    Median sweeps to coalescence, a = b = 1, c set from Delta:
+
+           Delta   +0.5    -3     -6    -10    -15    -20
+      n=10            64     64    256    512   4096   4096
+      n=16           256    256   1024   2048  16384  >2^16
+      n=24          2048   1024   4096  >2^16  >2^16  >2^16
+
+    Flat to about Delta = -5, then steep, and the two factors compound:
+    n=24 at Delta=-10 already exceeds a budget that n=96 meets at Delta=0.
+    Someone at Delta = -25 was being told to reduce n, which would not have
+    helped them.
+
+    Both halves are pinned here: the measurement, so the claim cannot be
+    re-derived from too narrow a range again, and the trigger, so the
+    warning keeps naming whichever factor is responsible.
+    """
+    import math
+    import pathlib
+
+    from sixvertex.cftp_exact import cftp_sample
+
+    def sweeps(n, delta, seeds=(1, 2, 3)):
+        c = math.sqrt(2 - 2 * delta)
+        w = dict(a1=1., a2=1., b1=1., b2=1., c1=c, c2=c)
+        out = []
+        for s in seeds:
+            _, info = cftp_sample(n, w, master_seed=s, max_T=1 << 17)
+            out.append(info["sweeps"])
+        out.sort()
+        return out[len(out) // 2]
+
+    n = 10
+    flat = [sweeps(n, d) for d in (0.5, -3.0)]
+    deep = sweeps(n, -15.0)
+    assert flat[0] == flat[1], (
+        f"the curve is no longer flat between Delta=+0.5 and -3 at n={n} "
+        f"({flat}); the table in this docstring needs redoing")
+    assert deep >= 4 * max(flat), (
+        f"Delta no longer drives the coalescence time at n={n}: {max(flat)} "
+        f"sweeps at Delta=-3 against {deep} at Delta=-15. If that is real, "
+        f"the warning can go back to keying on n alone")
+
+    # the shipped warning must key on BOTH, and must not tell the user that
+    # Delta is irrelevant
+    js = (pathlib.Path(__file__).resolve().parent.parent
+          / "static" / "draw.js").read_text()
+    i = js.index("const slowNote")
+    block = js[i:i + 2600]
+    assert "CFTP_SLOW_DELTA" in block and "CFTP_SLOW_N" in block, (
+        "the slow-sampling warning no longer considers both n and Delta:\n"
+        + block[:400])
+    code = "\n".join(ln for ln in block.splitlines()
+                     if not ln.strip().startswith("//"))
+    for claim in ("not by \\u0394", "will not help"):
+        assert claim not in code, (
+            f"the warning still tells the user {claim!r}, which the "
+            f"measurements above contradict")

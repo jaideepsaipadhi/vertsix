@@ -27,7 +27,7 @@ cannot justify. Three methods cover complementary regimes:
 | method | valid for | cost |
 |---|---|---|
 | `exact_sample` | **any** positive weights | `C(n, n/2)`, so `n <= 14` |
-| `cftp_sample` | `c1*c2 >= a1*a2` and `c1*c2 >= b1*b2` | `~n^4` |
+| `cftp_sample` | `c1*c2 >= a1*a2` and `c1*c2 >= b1*b2` | `~n^4`, steeper below `Delta ~ -5` |
 | `stochastic.sample` | stochastic weights, free exit, `Delta >= 1` | `O(n^2)` |
 
 `sv.sample(...)` picks between the first two and **raises** if neither

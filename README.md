@@ -404,8 +404,22 @@ it did before.
 
 ## Performance of exact sampling
 
-CFTP cost scales as `n^4`: sweeps to coalescence grow like `n^2`, and each
-sweep touches `O(n^2)` sites.
+CFTP cost scales as `n^4` **while `Delta` stays above about `-5`**: sweeps to
+coalescence grow like `n^2`, and each sweep touches `O(n^2)` sites. Below
+that, `Delta` becomes the dominant factor and the `n^4` picture stops being
+the whole story. Median sweeps to coalescence, `a = b = 1` with `c` set from
+`Delta`:
+
+| | `+0.5` | `-3` | `-6` | `-10` | `-15` | `-20` |
+|---|---|---|---|---|---|---|
+| `n=10` | 64 | 64 | 256 | 512 | 4096 | 4096 |
+| `n=16` | 256 | 256 | 1024 | 2048 | 16384 | `>2^16` |
+| `n=24` | 2048 | 1024 | 4096 | `>2^16` | `>2^16` | `>2^16` |
+
+The two compound: `n=24` at `Delta=-10` already exceeds a budget that `n=96`
+meets at `Delta=0`. This is a cost, not a correctness limit -- the region is
+still the region -- but deep in the antiferroelectric phase the sampler can
+exhaust its doubling budget and report that it did not coalesce.
 
 Three optimisations, all found by profiling rather than guesswork:
 
