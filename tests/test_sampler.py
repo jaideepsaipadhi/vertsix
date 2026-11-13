@@ -5330,3 +5330,139 @@ def test_states_rounded_away_are_accounted_for_rather_than_ignored_or_feared():
             "a build whose dropped mass is comparable to its partition "
             "function was accepted; the sampler would draw from a measurably "
             "truncated support")
+
+
+def test_a_negative_seed_is_accepted_everywhere_and_nothing_returns_a_500():
+    """Typing -5 into the seed box broke every sampler.
+
+    numpy's default_rng and SeedSequence take non-negative integers only, and
+    the value went to them unchecked. On the two job endpoints that surfaced
+    as a failed job reading "expected non-negative integer" -- a numpy
+    message shown to someone who had just asked for a reproducible figure.
+    On /api/stochastic it was worse: an unhandled exception, so Flask
+    returned a 500 whose HTML body hit the browser's .json() and produced
+    "Unexpected token '<', "<!doctype "... is not valid JSON". Both were
+    reachable from the page, since parseInt("-5") is -5 and the box invites
+    a seed.
+
+    A non-finite n did the same thing by a different route: int(float("inf"))
+    raises OverflowError, which the handler's (TypeError, ValueError) clause
+    did not catch.
+
+    Non-negative seeds still pass through exactly, so nothing that worked
+    before changes; a negative one maps deterministically into the top of the
+    64-bit range. The last assertion is the general one: no input to any
+    endpoint should produce a 5xx, since that means a stack trace rather than
+    an answer.
+    """
+    import time
+
+    import server
+
+    c = server.app.test_client()
+
+    def exact_job(seed, n=8):
+        r = c.post("/api/exact/start",
+                   json={"n": n, "a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                         "c_up": 1, "c_down": 1, "seed": seed})
+        assert r.status_code == 200, (r.status_code, r.data[:200])
+        jid = r.get_json()["job_id"]
+        for _ in range(3000):
+            s = c.get(f"/api/exact/status/{jid}").get_json()
+            if s.get("status") in ("done", "error"):
+                return s
+            time.sleep(0.05)
+        raise AssertionError("job never finished")
+
+    def stoch(seed, n=16):
+        r = c.post("/api/stochastic",
+                   json={"n": n, "b1": 0.3, "b2": 0.7, "seed": seed})
+        assert r.status_code == 200, (
+            f"seed={seed} gave HTTP {r.status_code}: {r.data[:160]}")
+        return r.get_json()["frame"]
+
+    for seed in (-1, -12345, -(2 ** 63)):
+        s = exact_job(seed)
+        assert s["status"] == "done", (
+            f"a negative seed failed the exact job: {s.get('error')!r}")
+        stoch(seed)
+
+    # deterministic, and distinct from each other and from the positives
+    assert stoch(-1) == stoch(-1)
+    assert stoch(-1) != stoch(-2)
+    assert stoch(-1) != stoch(1)
+
+    # non-negative seeds pass through unchanged
+    for seed in (0, 7, 12345, 2 ** 31):
+        assert stoch(seed) == stoch(seed)
+    assert stoch(7) != stoch(8)
+
+    # The normalised value must stay exactly representable as a JavaScript
+    # number, and the page must echo back what the CALLER typed. With a 2^64
+    # modulus, -5 became 18446744073709552000 in the browser -- not the value
+    # the server used, and not retypable, so the reported seed was unusable.
+    assert server._normalise_seed(-5) < 2 ** 53
+    assert server._normalise_seed(-(2 ** 63)) < 2 ** 53
+    assert server._normalise_seed(7) == 7 and server._normalise_seed(0) == 0
+    assert server._normalise_seed(None) is None
+    for seed in (-5, 7, None):
+        info = c.post("/api/stochastic",
+                      json={"n": 8, "b1": 0.3, "b2": 0.7,
+                            "seed": seed}).get_json()["info"]
+        assert info.get("seed") == seed, (
+            f"the server echoed {info.get('seed')!r} for a request with "
+            f"seed={seed!r}; the page would report a seed that does not "
+            f"reproduce the sample")
+
+    # non-finite n is a 400, not a 500
+    for v in (float("inf"), float("nan"), -float("inf")):
+        for path, body in (("/api/exact/start",
+                            {"a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                             "c_up": 1, "c_down": 1}),
+                           ("/api/stochastic", {"b1": 0.3, "b2": 0.7})):
+            r = c.post(path, json={**body, "n": v})
+            assert r.status_code == 400, (
+                f"{path} with n={v} returned {r.status_code}, not a clean 400")
+
+    # The general invariant: no input should produce a stack trace. Any 5xx
+    # here is a crash the caller cannot act on.
+    weird = [None, "", "abc", [], {}, True, False, 0, -1, 1e400, float("nan"),
+             float("inf"), -0.0, "1", "1e5", [1, 2], {"x": 1}, 2 ** 70,
+             -(2 ** 70), "-5"]
+    started = []
+    failures = []
+
+    def probe(path, body, field, value):
+        d = dict(body)
+        d[field] = value
+        r = c.post(path, json=d)
+        if r.status_code >= 500:
+            failures.append((path, field, repr(value)[:24], r.status_code))
+        elif r.status_code == 200 and path.endswith("/start"):
+            j = (r.get_json() or {}).get("job_id")
+            if j:
+                started.append(j)
+
+    try:
+        for v in weird:
+            for field in ("n", "a1", "c_up", "seed"):
+                probe("/api/exact/start",
+                      {"n": 8, "a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                       "c_up": 1, "c_down": 1}, field, v)
+            for field in ("n", "b1", "seed"):
+                probe("/api/stochastic", {"n": 8, "b1": 0.3, "b2": 0.7},
+                      field, v)
+            for field in ("n", "seed", "x_cuts", "y_cuts", "I"):
+                probe("/api/domain/start",
+                      {"n": 12, "a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                       "c_up": 2, "c_down": 2, "x_cuts": [4, 8],
+                       "y_cuts": [4, 8],
+                       "I": [[1, 1, 1], [0, 1, 1], [0, 0, 1]]}, field, v)
+        assert not failures, (
+            f"{len(failures)} inputs produced a 5xx instead of an error the "
+            f"caller can read: {failures[:8]}")
+    finally:
+        # don't leave the fuzz's jobs holding concurrency slots
+        with server._jobs_lock:
+            for j in started:
+                server._jobs.pop(j, None)

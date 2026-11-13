@@ -234,6 +234,40 @@ class BadRequest(Exception):
     """Client sent something we can't act on. Turned into a 400."""
 
 
+def _normalise_seed(raw):
+    """Accept any integer seed, including a negative one.
+
+    numpy's default_rng and SeedSequence take non-negative integers only, and
+    the raw value went straight to them: a seed of -5 raised "expected
+    non-negative integer" deep inside numpy. That surfaced as a failed job on
+    the two job endpoints and, on /api/stochastic, as an unhandled exception
+    -- a 500 whose HTML body reached the browser's .json() and produced
+    "Unexpected token '<'". Typing a negative number into a box captioned
+    "seed (blank = random)" is not an abuse of the API.
+
+    Non-negative seeds are passed through exactly, so nothing that worked
+    before changes. A negative one is mapped into [0, 2^32), deterministically
+    -- the same negative seed always gives the same sample.
+
+    The modulus is 2^32 rather than 2^64 so the result stays below 2^53 and
+    is therefore exact as a JavaScript number. With 2^64, -5 came back as
+    18446744073709552000, which is not the value the server used and not a
+    number anyone could retype to reproduce the figure: the page would have
+    been reporting an unusable seed.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise BadRequest(f"seed must be an integer, got {raw!r}")
+    if isinstance(raw, float) and not math.isfinite(raw):
+        raise BadRequest(f"seed must be a finite integer, got {raw!r}")
+    try:
+        v = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise BadRequest(f"seed must be an integer, got {raw!r}")
+    return v if v >= 0 else v % (1 << 32)
+
+
 def _parse_request(data, n_min=4, n_max=400, n_default=40):
     """Parse and validate n + the six weights from a request body.
 
@@ -258,8 +292,12 @@ def _parse_request(data, n_min=4, n_max=400, n_default=40):
 
     try:
         n_raw = data.get("n", n_default)
+        # int(float("inf")) raises OverflowError, not ValueError, so an
+        # unchecked inf escaped this handler and became a 500.
+        if isinstance(n_raw, float) and not math.isfinite(n_raw):
+            raise BadRequest(f"n must be a finite integer, got {n_raw!r}")
         n = int(n_raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise BadRequest(f"n must be an integer, got {data.get('n')!r}")
     if n < n_min or n > n_max:
         raise BadRequest(f"n must be between {n_min} and {n_max}, got {n}")
@@ -275,7 +313,7 @@ def _parse_request(data, n_min=4, n_max=400, n_default=40):
                 f"weight {name} must be strictly positive (the Boltzmann "
                 f"distribution is undefined otherwise), got {v}"
             )
-    return n, weights, data.get("seed")
+    return n, weights, _normalise_seed(data.get("seed"))
 
 
 @app.route("/api/stochastic", methods=["POST"])
@@ -288,10 +326,14 @@ def api_stochastic():
     would cost more than running it.
     """
     data = request.get_json(silent=True) or {}
+    n_raw = data.get("n", 64)
     try:
-        n = int(data.get("n", 64))
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "n must be an integer"}), 400
+        if isinstance(n_raw, float) and not math.isfinite(n_raw):
+            raise ValueError(n_raw)
+        n = int(n_raw)
+    except (TypeError, ValueError, OverflowError):
+        return jsonify({"ok": False,
+                        "error": f"n must be a finite integer, got {n_raw!r}"}), 400
     if not 4 <= n <= 400:
         return jsonify({"ok": False, "error": "n must be between 4 and 400"}), 400
     try:
@@ -304,12 +346,10 @@ def api_stochastic():
                         "b1 and b2 must lie strictly between 0 and 1; they "
                         "are conditional probabilities, not Boltzmann "
                         f"weights (got b1={b1}, b2={b2})"}), 400
-    seed = data.get("seed")
-    if seed is not None:
-        try:
-            seed = int(seed)
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "seed must be an integer"}), 400
+    try:
+        seed = _normalise_seed(data.get("seed"))
+    except BadRequest as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
     h, v = _stochastic.sample(n, b1, b2, seed=seed)
     # Rows reversed so that math row 0 (the bottom, where no arrows enter) is
@@ -342,7 +382,9 @@ def api_stochastic():
         "info": {
             "method": "stochastic-sequential",
             "delta": float(_stochastic.delta(b1, b2)),
-            "b1": b1, "b2": b2, "seed": seed,
+            # Echo the seed the CALLER gave, not the normalised one, so the
+            # page shows what to type to get this sample again.
+            "b1": b1, "b2": b2, "seed": data.get("seed", seed),
         },
     })
 
