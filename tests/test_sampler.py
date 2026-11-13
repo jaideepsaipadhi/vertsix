@@ -939,6 +939,17 @@ def test_out_of_range_values_are_rejected_not_clamped():
     ok = app.post("/api/exact/start", json={"n": 250, "a1": 1, "a2": 1, "b1": 1,
                                             "b2": 1, "c_up": 1, "c_down": 1})
     assert ok.status_code == 200
+    # Starting an n=250 job really does start one, and nothing here waits for
+    # it. Left in the table it stayed "running" for the whole rest of the
+    # suite, holding one of the three concurrency slots -- which is a test
+    # leaking shared state, and it made the job-lifecycle test fail only when
+    # run after this one. Drop the entry so the slot comes back. (The worker
+    # thread keeps going until it finishes; it discards its result, because
+    # the writer checks that the id is still in the table.)
+    _leaked = ok.get_json().get("job_id")
+    if _leaked:
+        with server._jobs_lock:
+            server._jobs.pop(_leaked, None)
     bad = app.post("/api/exact/start", json={"n": 251, "a1": 1, "a2": 1, "b1": 1,
                                              "b2": 1, "c_up": 1, "c_down": 1})
     assert bad.status_code == 400, "n above the limit was accepted"
@@ -4631,3 +4642,401 @@ console.log(JSON.stringify({
     assert r["shadow"], (
         "the shadow chain follows the same trajectory as the main one, so "
         "the equilibration badge is comparing a chain with itself")
+
+
+def test_general_domain_sampler_is_exact_at_six_distinct_weights():
+    """The two domain exactness checks both run at a1=a2, b1=b2, c1=c2.
+
+    At such a point the compiled weight table holds three distinct numbers
+    rather than six, so a mis-indexed entry can land on a slot carrying the
+    same value and change nothing. The general-domain path has its own sweep
+    (sweep_fast over plan arrays, driven by a 16-entry table built from
+    domains.FACE), separate from the DWBC one, and nothing exercised it with
+    six distinguishable weights.
+
+    Compared against the enumerated law on a staircase -- not the square, so
+    the boundary is not the DWBC one either.
+    """
+    import numpy as np
+    from scipy.stats import chi2 as chi2_dist
+
+    from sixvertex.domains import (cftp_sample, classify_counts, domain_mask,
+                                   in_monotone_region)
+    from experiments.brute_domain import enumerate_heights
+
+    w = dict(a1=0.7, a2=1.3, b1=0.5, b2=1.6, c1=1.1, c2=2.3)
+    assert len(set(w.values())) == 6
+    assert in_monotone_region(w)
+
+    m = domain_mask([0, 3, 6], [0, 3, 6], [[1, 1], [0, 1]])
+    hs = enumerate_heights(m)
+    assert len(hs) == 49, f"expected 49 configurations, got {len(hs)}"
+
+    wt = []
+    for H in hs:
+        x = 1.0
+        for k, v in classify_counts(H, m).items():
+            x *= w[k] ** v
+        wt.append(x)
+    exact = np.array(wt) / sum(wt)
+
+    key = {H.tobytes(): i for i, H in enumerate(hs)}
+    N = 4000
+    cnt = np.zeros(len(hs))
+    for s in range(N):
+        H, _ = cftp_sample(m, w, master_seed=606_000 + s)
+        k = key.get(np.ascontiguousarray(H).tobytes())
+        assert k is not None, "the sampler left the enumerated state space"
+        cnt[k] += 1
+
+    e = exact * N
+    live = e >= 5
+    assert live.sum() >= 15, (
+        f"only {live.sum()} cells have expected count >= 5; raise N")
+    chi = float((((cnt - e) ** 2) / e)[live].sum())
+    dof = int(live.sum()) - 1
+    p = float(chi2_dist.sf(chi, dof))
+    assert p > 1e-3, (
+        f"the general-domain sampler does not reproduce the enumerated law "
+        f"at asymmetric weights: chi2={chi:.1f} on {dof} dof, p={p:.2e}")
+
+
+def test_label_swaps_leave_the_measure_invariant_on_general_domains_too():
+    """Why no amount of sampling can settle the b1/b2 naming.
+
+    Under DWBC the invariance is easy to see: every configuration has
+    #a1 = #a2, #b1 = #b2 and #c1 - #c2 = n, so exchanging a pair multiplies
+    each weight by the same power and the normalised measure does not move.
+    It is tempting to think a less symmetric domain would break that and let
+    the convention be read off the data -- and the individual identities DO
+    break: on this staircase #b1 - #b2 = 9 for every configuration, and on
+    the notched square #a1 - #a2 = -4.
+
+    But the DIFFERENCE is constant across configurations, because it is fixed
+    by the boundary, not by the interior. So the swap still multiplies every
+    weight by one common factor: the partition function moves (by 35184 for
+    b1<->b2 on the staircase) and the probability measure does not.
+
+    Hence the naming had to be anchored to a published convention
+    (Gorin-Kenyon Theorem 2.11), and the cross-table test is what guards it.
+    This records the reason, so nobody re-opens the question by sampling a
+    stranger domain.
+    """
+    import numpy as np
+
+    from sixvertex.domains import classify_counts, domain_mask
+    from experiments.brute_domain import enumerate_heights
+
+    domains = {
+        "staircase": ([0, 3, 6], [0, 3, 6], [[1, 1], [0, 1]]),
+        "plus": ([0, 1, 3, 4], [0, 2, 3, 4], [[0, 1, 0], [1, 1, 1], [0, 1, 0]]),
+    }
+    w = dict(a1=0.7, a2=1.3, b1=0.5, b2=1.6, c1=1.1, c2=2.3)
+
+    for name, (X, Y, I) in domains.items():
+        m = domain_mask(X, Y, I)
+        hs = enumerate_heights(m)
+        counts = [classify_counts(H, m) for H in hs]
+
+        # the mechanism: each pair's count difference is a domain invariant
+        for lo, hi in (("a1", "a2"), ("b1", "b2"), ("c1", "c2")):
+            diffs = {c.get(lo, 0) - c.get(hi, 0) for c in counts}
+            assert len(diffs) == 1, (
+                f"{name}: #{lo} - #{hi} is not constant across "
+                f"configurations ({sorted(diffs)}) -- if this ever fails, the "
+                f"swap is detectable from samples and this reasoning changes")
+
+        def law(weights):
+            v = np.array([
+                np.prod([weights[k] ** n for k, n in c.items()])
+                for c in counts], dtype=float)
+            return v / v.sum(), v.sum()
+
+        base, Z0 = law(w)
+        for lo, hi in (("a1", "a2"), ("b1", "b2"), ("c1", "c2")):
+            sw = dict(w)
+            sw[lo], sw[hi] = w[hi], w[lo]
+            other, Z1 = law(sw)
+            assert np.abs(base - other).max() < 1e-12, (
+                f"{name}: swapping {lo}/{hi} moved the measure")
+            # Z is allowed to move, and that is the whole asymmetry: the
+            # normalisation absorbs the constant factor.
+            assert Z1 > 0
+
+
+def test_the_exact_sampling_job_lifecycle():
+    """Every exact sample goes through the job machinery; test it as a whole.
+
+    Six properties, each of which has a plausible failure that looks like
+    nothing from a single run:
+
+      - an unknown or expired job id answers 404 with a message, not a 500
+        with a stack trace;
+      - concurrent jobs do not share state (this server once kept a single
+        module-level sampler, so two clients clobbered each other);
+      - the concurrency cap refuses the next job with 429 and says why,
+        rather than accepting work it will not do;
+      - a finished job frees its slot;
+      - a job stuck in "running" past the watchdog threshold is reaped, so
+        _MAX_CONCURRENT_JOBS abandoned jobs cannot disable exact sampling
+        server-wide until a restart;
+      - and a RUNNING job is not evicted merely for being old. That one is
+        the subtler half: expiring by created_at regardless of status meant a
+        long legitimate run (exact sampling at n in the low hundreds) could
+        be discarded mid-flight, its worker still burning CPU and its result
+        thrown away on completion.
+    """
+    import time
+
+    import server
+
+    c = server.app.test_client()
+
+    r = c.get("/api/exact/status/deadbeefdeadbeef")
+    assert r.status_code == 404, r.status_code
+    body = r.get_json()
+    assert body and body.get("ok") is False and body.get("error"), body
+
+    def finish(job_id, limit=3000):
+        for _ in range(limit):
+            s = c.get(f"/api/exact/status/{job_id}").get_json()
+            if s.get("status") in ("done", "error"):
+                return s
+            time.sleep(0.05)
+        raise AssertionError(f"job {job_id} never finished")
+
+    def start(seed, n=20):
+        return c.post("/api/exact/start",
+                      json={"n": n, "a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                            "c1": 2, "c2": 2, "seed": seed})
+
+    # Hermetic: other tests in this file start jobs, and one of them starts a
+    # genuinely long n=250 job. A foreign entry left in the table changes what
+    # the cap does here, so take the table aside for the duration and put it
+    # back afterwards. (A foreign worker that finishes meanwhile simply finds
+    # its id missing and discards its result, which is what it already does
+    # for an expired job.)
+    with server._jobs_lock:
+        borrowed = dict(server._jobs)
+        server._jobs.clear()
+
+    fakes = []
+
+    def occupy(k, created_at):
+        """Park a fake 'running' job in the table, holding a slot."""
+        name = f"fake_{k}_{len(fakes)}"
+        with server._jobs_lock:
+            server._jobs[name] = {"status": "running", "created_at": created_at}
+        fakes.append(name)
+        return name
+
+    try:
+        # Concurrent jobs must not share state. They are NOT relied on to
+        # overlap: at this size a job finishes in well under a second, so an
+        # earlier version of this test started three and asserted the fourth
+        # was refused, which passed only when numba's first-call compile
+        # happened to make the first jobs slow enough to still be running.
+        # That is a race in the test, not a property of the server, and it
+        # failed as soon as the suite ran it warm. The cap is checked below
+        # with jobs that are guaranteed to be occupying their slots.
+        frames = []
+        for seed in (1, 2, 3):
+            r = start(seed)
+            assert r.status_code == 200, (r.status_code, r.data[:200])
+            s_ = finish(r.get_json()["job_id"])
+            assert s_["status"] == "done", s_
+            frames.append(repr(s_["frame"]))
+        assert len(set(frames)) == 3, (
+            "jobs at different seeds returned identical frames -- they are "
+            "sharing state")
+
+        # The cap, deterministically: fill every slot, then ask for one more.
+        now = time.time()
+        for k in range(server._MAX_CONCURRENT_JOBS):
+            occupy(k, now)
+        over = start(4)
+        assert over.status_code == 429, (
+            f"a job was accepted with every slot occupied "
+            f"(HTTP {over.status_code}); the cap is not holding")
+        assert "too many" in (over.get_json() or {}).get("error", ""), \
+            over.get_json()
+
+        # Freeing a slot lets work through again.
+        with server._jobs_lock:
+            server._jobs.pop(fakes.pop(), None)
+        r = start(9, n=10)
+        assert r.status_code == 200, (
+            f"a slot was freed but the next job was still refused "
+            f"(HTTP {r.status_code})")
+        finish(r.get_json()["job_id"])
+
+        with server._jobs_lock:
+            for k in list(fakes):
+                server._jobs.pop(k, None)
+            fakes.clear()
+
+        # A long legitimate run must survive cleanup: old enough to expire by
+        # TTL, still well inside the watchdog threshold.
+        name = occupy("long", time.time() - (server._JOB_TTL_SECONDS + 600))
+        with server._jobs_lock:
+            server._cleanup_old_jobs()
+            survived = server._jobs.get(name)
+        assert survived is not None and survived["status"] == "running", (
+            "a running job was evicted for being old; a long exact sample "
+            "would be discarded mid-flight")
+        with server._jobs_lock:
+            server._jobs.pop(name, None)
+        fakes.remove(name)
+
+        # Abandoned workers must not disable sampling server-wide.
+        stale = time.time() - (server._JOB_MAX_RUNTIME_SECONDS + 60)
+        stuck = [occupy(f"stuck{k}", stale)
+                 for k in range(server._MAX_CONCURRENT_JOBS)]
+        r = start(10, n=10)
+        assert r.status_code == 200, (
+            f"abandoned jobs disabled exact sampling (HTTP {r.status_code}); "
+            f"the watchdog did not reap them")
+        with server._jobs_lock:
+            statuses = {k: server._jobs[k]["status"] for k in stuck}
+        assert set(statuses.values()) == {"error"}, statuses
+        finish(r.get_json()["job_id"])
+    finally:
+        with server._jobs_lock:
+            for k in fakes:
+                server._jobs.pop(k, None)
+            for k, v in borrowed.items():
+                server._jobs.setdefault(k, v)
+
+
+def test_every_server_result_is_discarded_if_the_parameters_moved():
+    """A finished job must not be drawn under controls it does not belong to.
+
+    All three handlers that fetch a sample from the server can outlive the
+    parameters they were started with: the sliders and the domain grid stay
+    live while a job runs, and a CFTP sample at a few hundred sites takes
+    long enough for someone to change their mind. Each one therefore
+    snapshots paramGen before starting and drops the result if it has moved.
+
+    The domain handler did neither. Measured in a browser: start a sample on
+    one set of blocks, flip a block while it runs, and the finished job drew
+    the OLD domain's configuration under the new grid, captioned with the old
+    domain's coupling window (1024, where the new one needs 4096). The
+    picture and the controls described different regions, which is the exact
+    failure this codebase already fixed once for live weight changes.
+
+    Stated as an invariant over the handlers rather than as a fact about that
+    one, so a fourth path cannot be added without the guard. The grid toggle
+    must also bump the generation, or the check it feeds never fires.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    js = (root / "static" / "draw.js").read_text()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    # Every place that SNAPSHOTS the generation must also check it: a
+    # snapshot with no check is the shape the domain handler would have had
+    # if someone had added half the guard.
+    n_snap = code.count("requestedGen = paramGen")
+    n_check = code.count("paramGen !== requestedGen")
+    assert n_snap >= 3, (
+        f"only {n_snap} handlers snapshot paramGen; the two exact paths and "
+        f"the domain path all outlive their parameters")
+    assert n_check == n_snap, (
+        f"{n_snap} snapshots of paramGen but {n_check} checks -- a result is "
+        f"being rendered without comparing the generation it was started at")
+
+    # the domain handler specifically, since it is the one that lacked both
+    dom = _js_function_body(code, "function sampleDomain(")
+    assert "requestedGen = paramGen" in dom and "paramGen !== requestedGen" in dom, (
+        "sampleDomain does not guard its result against a parameter change")
+    assert dom.index("paramGen !== requestedGen") < dom.index("renderFrame("), (
+        "sampleDomain renders before checking the generation")
+
+    # fetchExactSample is the one function that builds a server frame without
+    # a guard, and that is correct only because it RETURNS the frame for its
+    # caller to check. Pin that, so the exemption cannot quietly widen.
+    helper = _js_function_body(code, "function fetchExactSample(")
+    assert "frameFromServerData" in helper
+    assert "renderFrame(" not in helper, (
+        "fetchExactSample now renders as well as returns, so it needs the "
+        "generation guard its callers currently provide")
+
+    # and the controls that change the DOMAIN must bump the generation,
+    # otherwise the guard above is checking a number that never moves
+    grid = _js_function_body(code, "function buildDomainGrid(")
+    assert "DOMAIN_I[u][v] = DOMAIN_I[u][v] ? 0 : 1;" in grid, grid[:200]
+    assert "bumpParams()" in grid, (
+        "toggling a domain block does not bump paramGen, so a sample in "
+        "flight is not recognised as belonging to a different domain")
+
+
+def test_a_removed_job_is_not_resurrected_by_its_own_worker():
+    """A deliberate removal from the job table must stick.
+
+    The completion handler writes its status under `job_id in _jobs`, so a
+    worker whose entry was removed discards its result -- but an earlier
+    draft of this guard wrote an "error" status on the way out instead, which
+    put the entry back in the table after something had deliberately taken it
+    out. The worker now exits quietly.
+
+    What this test does NOT claim: that stopping early saves work. It was
+    first written that way, asserting the thread exits after the entry is
+    dropped, and a mutation that removed the abort entirely still passed --
+    at these sizes the job simply finishes on its own inside the window. The
+    measurement says the same thing: the progress callback fires once per
+    doubling attempt and the last attempt dominates, so a job dropped 0.3s in
+    ran for 0.92x (n=96) and 1.01x (n=128) of an uninterrupted one. Bounding
+    the waste would need a check inside the sweep loop, and the server does
+    not drop running jobs anyway -- _cleanup_old_jobs expires only finished
+    ones. So the property worth holding is that the removal sticks, and that
+    is what is asserted.
+    """
+    import threading
+    import time
+
+    import server
+
+    c = server.app.test_client()
+    before = threading.active_count()
+
+    r = c.post("/api/exact/start",
+               json={"n": 48, "a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                     "c1": 1, "c2": 1, "seed": 1})
+    assert r.status_code == 200, (r.status_code, r.data[:200])
+    jid = r.get_json()["job_id"]
+
+    for _ in range(200):
+        time.sleep(0.05)
+        with server._jobs_lock:
+            if server._jobs.get(jid, {}).get("status") == "running":
+                break
+    with server._jobs_lock:
+        server._jobs.pop(jid, None)
+
+    for _ in range(1200):
+        time.sleep(0.05)
+        if threading.active_count() <= before:
+            break
+    else:
+        raise AssertionError("the worker never finished")
+
+    with server._jobs_lock:
+        assert jid not in server._jobs, (
+            "the worker wrote a status for a job that had been removed, "
+            "putting the entry back in the table")
+
+    # and the removal must not have broken the endpoint for anyone else
+    r2 = c.post("/api/exact/start",
+                json={"n": 8, "a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                      "c1": 1, "c2": 1, "seed": 2})
+    assert r2.status_code == 200, (r2.status_code, r2.data[:200])
+    jid2 = r2.get_json()["job_id"]
+    for _ in range(2000):
+        st = c.get(f"/api/exact/status/{jid2}").get_json()
+        if st.get("status") in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert st["status"] == "done", st

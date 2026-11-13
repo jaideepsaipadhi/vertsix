@@ -121,6 +121,10 @@ def _cleanup_old_jobs():
         del _jobs[jid]
 
 
+class _JobDropped(Exception):
+    """Raised inside a worker when its job entry has been removed."""
+
+
 def _run_exact_job(job_id, n, a1, a2, b1, b2, c1, c2, seed):
     """Run exact sampling in the background.
 
@@ -128,17 +132,38 @@ def _run_exact_job(job_id, n, a1, a2, b1, b2, c1, c2, seed):
       - n <= MAX_EXACT_N: use the exact SEQUENTIAL sampler (exact.py). This
         is correct for ARBITRARY weights and has no mixing-time or
         monotonicity requirement, so it is always preferred when affordable.
-      - larger n, but weights at the uniform point: fall back to CFTP, which
-        is only valid there (see cftp.py and ALGORITHM.md).
-      - larger n with non-uniform weights: refuse, rather than return a
-        result we cannot justify. CFTP's coupling provably does not target
-        the right measure there.
+      - larger n inside the monotone region: CFTP. This description used to
+        say "weights at the uniform point: fall back to CFTP, which is only
+        valid there", which was the superseded criterion -- the code below
+        has called in_monotone_region since the four-face rule replaced the
+        hardcoded p_up = c1/(c1+c2), and the region c1c2 >= a1a2,
+        c1c2 >= b1b2 is far larger than the point.
+      - larger n outside that region: refuse, rather than return a result we
+        cannot justify. No coupling of the update is monotone there, so
+        coalescence would certify nothing.
     """
     def progress_cb(T, attempts, coalesced):
+        # A worker whose entry has been removed stops here rather than
+        # running on and writing a terminal status, which would put the
+        # entry back in the table after something deliberately took it out.
+        #
+        # This is hygiene, not a CPU saving, and the distinction is worth
+        # recording because it is easy to assume otherwise: the callback
+        # fires once per DOUBLING ATTEMPT, and the last attempt dominates the
+        # total, so dropping an entry part-way through one buys almost
+        # nothing. Measured at n=96 and n=128, a job dropped 0.3s in ran for
+        # 0.92x and 1.01x the time of an uninterrupted one. Bounding the
+        # waste would need a check inside the sweep loop.
+        #
+        # Nor does the server currently drop running jobs: _cleanup_old_jobs
+        # expires only FINISHED ones, on purpose. So this path is reached by
+        # a deliberate removal, and the property it protects is that such a
+        # removal sticks.
         with _jobs_lock:
-            if job_id in _jobs:
-                _jobs[job_id]["last_T"] = T
-                _jobs[job_id]["attempts"] = attempts
+            if job_id not in _jobs:
+                raise _JobDropped(job_id)
+            _jobs[job_id]["last_T"] = T
+            _jobs[job_id]["attempts"] = attempts
 
     try:
         w = {"a1": a1, "a2": a2, "b1": b1, "b2": b2, "c1": c1, "c2": c2}
@@ -181,6 +206,11 @@ def _run_exact_job(job_id, n, a1, a2, b1, b2, c1, c2, seed):
                 _jobs[job_id]["finished_at"] = time.time()
                 _jobs[job_id]["frame"] = frame
                 _jobs[job_id]["info"] = info
+    except _JobDropped:
+        # The entry went away while this ran; nothing to report it to, and
+        # nothing to report. Exit quietly rather than writing a status that
+        # would resurrect the job in the table.
+        return
     except (RuntimeError, ValueError) as e:
         with _jobs_lock:
             if job_id in _jobs:

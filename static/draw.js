@@ -1396,6 +1396,12 @@
         b.addEventListener("click", () => {
           DOMAIN_I[u][v] = DOMAIN_I[u][v] ? 0 : 1;
           b.setAttribute("aria-pressed", DOMAIN_I[u][v] ? "true" : "false");
+          // Changing the blocks changes the DOMAIN, so a sample already in
+          // flight is for a different region. Without this bump (and the
+          // generation check where the result lands) the finished job drew
+          // the old domain's configuration underneath the new grid, with
+          // the old coupling window printed beside it.
+          bumpParams();
         });
         grid.appendChild(b);
       }
@@ -1429,6 +1435,10 @@
       msg.textContent = e.message;
       return;
     }
+    // Snapshot the parameter generation, as both exact handlers do, so a
+    // result that lands after the domain or the weights moved is discarded
+    // rather than drawn under controls it does not belong to.
+    const requestedGen = paramGen;
     if (btn) btn.disabled = true;
     msg.textContent = "sampling\u2026";
     hudStatus.textContent = "exact sampling";
@@ -1459,6 +1469,16 @@
         // sampler, as the DWBC exact path does, would drop the domain mask
         // (frames built from the in-browser chain are full squares) and the
         // region would silently render as the whole square again.
+        if (paramGen !== requestedGen) {
+          // The domain or the weights moved while this ran. The two exact
+          // handlers have always checked this; this one did not, so the
+          // result of a job started on one domain was rendered under
+          // whatever the controls showed when it landed.
+          msg.textContent =
+            "discarded: the domain or its weights changed while this " +
+            "sample was being drawn";
+          return;
+        }
         const f = frameFromServerData(st.frame);
         sampler = null;
         renderFrame(f);
