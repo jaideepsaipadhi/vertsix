@@ -1441,7 +1441,7 @@ def test_live_equilibration_diagnostic_exists():
 
 
 def test_convention_matches_izergin_korepin():
-    """Pin the face-label convention to the literature.
+    """Pin the face-label convention to the literature, at a != b.
 
     This code originally had b and c swapped relative to the standard
     six-vertex convention. The consequences were not cosmetic: the reported
@@ -1453,10 +1453,43 @@ def test_convention_matches_izergin_korepin():
     The check: the Izergin-Korepin determinant for DWBC must reproduce our
     partition function in the SAME weight slots. IK is itself validated here
     by giving the ASM numbers at the ice point.
+
+    Two things were wrong with this check, both of which made it weaker than
+    it reads.
+
+    First it ran only at lambda = 0, where a = f(eta - lambda) and
+    b = f(eta + lambda) are EQUAL, so the whole comparison sat on the line
+    a = b. The spectral parameter slides a and b apart at FIXED Delta, so the
+    comparison now runs at lambda != 0 as well, in both orderings and in both
+    branches: sinh for Delta = -3, sin for the ice point and the free-fermion
+    point.
+
+    What that does NOT buy is worth stating, because it is tempting to assume
+    otherwise: it does not make an a/b swap detectable. Z is symmetric under
+    exchanging a and b for DWBC -- the swap is a reflection of the lattice,
+    which maps these boundary conditions to themselves -- and that is checked
+    below rather than assumed. So a/b joins b1/b2 and c1/c2 in the list of
+    relabellings no computation can see, and the convention still rests on
+    the citation. Widening lambda broadens the check across the (a, b) plane
+    against an error that treats the two asymmetrically WITHOUT being a clean
+    swap, which is a different and still-possible fault -- and that class is
+    not hypothetical. Weighting just the a1 face (the empty vertex) as b1 and
+    leaving everything else alone gives ours/IK = 1.000000 at every N when
+    lambda = 0, so the old form of this test passed it; at lambda = 0.15 the
+    same fault gives 1.159, 1.516 and 2.107 at N = 2, 3, 4.
+
+    Second, a missing mpmath made it return quietly, which pytest reports as a
+    pass. mpmath is an optional dev dependency and was NOT installed, so the
+    convention check the README cites had been vacuous. It skips loudly now.
     """
+    import pytest
+
     mp = pytest_importorskip_mpmath()
     if mp is None:
-        return
+        pytest.skip(
+            "mpmath is not installed, so the Izergin-Korepin convention "
+            "check cannot run. It is declared under the 'dev' extra; install "
+            "it rather than letting this check pass silently.")
     mp.mp.dps = 40
 
     def Z_IK(N, eta, lam, trig):
@@ -1478,16 +1511,56 @@ def test_convention_matches_izergin_korepin():
         assert abs(Z_IK(N, eta, lam, True) / a**(N*N) - asm) < 1e-6, (
             "IK implementation fails the ASM check")
 
-    # (b) our sampler matches IK in the same slots at Delta = -3
-    eta, lam = mp.acosh(3)/2, mp.mpf(0)
-    a = float(mp.sinh(eta-lam)); b = float(mp.sinh(eta+lam)); c = float(mp.sinh(2*eta))
-    assert abs((a*a + b*b - c*c) / (2*a*b) + 3.0) < 1e-9
-    w = dict(a1=a, a2=a, b1=b, b2=b, c1=c, c2=c)
-    for N in range(1, 5):
-        ours = ExactSampler(N, w).partition_function()
-        ik = Z_IK(N, eta, lam, False)
-        assert abs(ours - ik) / ik < 1e-9, (
-            f"N={N}: ours={ours} but IK={ik}; the b/c convention has slipped")
+    # (b) our sampler matches IK in the same slots, across three regimes and
+    #     with a and b pulled apart in both directions
+    cases = [
+        ("Delta = -3 (sinh)", mp.acosh(3)/2, False,
+         [mp.mpf(0), mp.mpf("0.15"), mp.mpf("0.3"), mp.mpf("-0.25")]),
+        ("ice point (sin)", mp.pi/3, True,
+         [mp.mpf(0), mp.mpf("0.2"), mp.mpf("-0.35")]),
+        ("free fermion (sin)", mp.pi/4, True,
+         [mp.mpf("0.1"), mp.mpf("-0.18")]),
+    ]
+    saw_a_less, saw_a_more = False, False
+    for label, eta, trig, lams in cases:
+        f = mp.sin if trig else mp.sinh
+        for lam in lams:
+            a = float(f(eta - lam))
+            b = float(f(eta + lam))
+            c = float(f(2 * eta))
+            if lam != 0:
+                assert abs(a - b) > 1e-6, (
+                    f"{label}, lambda={lam}: a and b did not separate, so "
+                    f"this case is not testing what it claims")
+                saw_a_less = saw_a_less or a < b
+                saw_a_more = saw_a_more or a > b
+            w = dict(a1=a, a2=a, b1=b, b2=b, c1=c, c2=c)
+            for N in range(1, 6):
+                ours = ExactSampler(N, w).partition_function()
+                ik = Z_IK(N, eta, lam, trig)
+                assert abs(ours - ik) / ik < 1e-9, (
+                    f"{label}, lambda={float(lam)}, N={N}: ours={ours} but "
+                    f"IK={ik} (a={a:.6f}, b={b:.6f}); the convention has "
+                    f"slipped in the a/b or b/c slots")
+
+    assert saw_a_less and saw_a_more, (
+        "the comparison never ran with both a > b and a < b, so it is still "
+        "sitting on the a = b line")
+
+    # The symmetry that bounds what any of this can prove: exchanging a and b
+    # leaves Z alone, so no partition-function comparison -- IK included --
+    # can tell the two apart. Recorded here so the limit is not rediscovered
+    # as a surprise.
+    for (a, b, c) in ((0.6, 1.4, 2.0), (0.8, 1.3, 1.1)):
+        for N in (2, 3, 4, 5):
+            za = ExactSampler(N, dict(a1=a, a2=a, b1=b, b2=b,
+                                      c1=c, c2=c)).partition_function()
+            zb = ExactSampler(N, dict(a1=b, a2=b, b1=a, b2=a,
+                                      c1=c, c2=c)).partition_function()
+            assert abs(za - zb) <= 1e-9 * za, (
+                f"Z is no longer symmetric under a<->b at N={N} "
+                f"(a={a}, b={b}, c={c}): {za} vs {zb}. If that is real, an "
+                f"a/b swap has become detectable and this reasoning changes")
 
 
 def pytest_importorskip_mpmath():
