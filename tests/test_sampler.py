@@ -3554,3 +3554,71 @@ def test_svg_export_handles_every_view_mode():
             f'picture than the one on screen')
     # the paths export must draw strokes, not a grid of filled cells
     assert "stroke" in export and "<path d=" in export
+
+
+def test_the_in_browser_sampler_reproduces_the_exact_measure():
+    """The live chain is what the page shows by default; it needs checking.
+
+    static/sixvertex.js is a second, independent implementation of the model
+    -- a heat-bath chain in JavaScript -- and nothing tied it to the Python
+    sampler. A wrong conditional there is exactly the fault that produced a
+    64% bias in the Python heat-bath move, and it would be invisible: the
+    pictures would still look like plausible six-vertex configurations.
+
+    At n=4 there are 42 configurations, so the whole distribution can be
+    compared rather than a summary statistic. Run at c = sqrt(8), Delta = -3,
+    the weights of the right panel of Figure 7.15 in the Gorin-Ferrari-
+    Borodin book draft.
+    """
+    import collections, json, math, os, shutil, subprocess, tempfile
+
+    import numpy as np
+    import pytest
+    from scipy.stats import chi2 as chi2_dist
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "..", "static", "sixvertex.js")).read()
+    driver = src + """
+const n=4, c=Math.sqrt(8), w={a1:1,a2:1,b1:1,b2:1,c1:c,c2:c};
+const s=new SixVertexJS(n,w,999);
+s.step(5000);
+const t=new Map();
+for(let k=0;k<40000;k++){ s.step(4); const key=Array.from(s.H).join(",");
+  t.set(key,(t.get(key)||0)+1); }
+console.log(JSON.stringify(Array.from(t)));
+"""
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "drv.js")
+        open(p, "w").write(driver)
+        out = subprocess.run([node, p], capture_output=True, text=True,
+                             timeout=300)
+    assert out.returncode == 0, out.stderr[:400]
+    js = dict(json.loads(out.stdout))
+
+    from sixvertex.exact import exact_sample
+    w = dict(a1=1., a2=1., b1=1., b2=1., c1=math.sqrt(8), c2=math.sqrt(8))
+    py = collections.Counter()
+    for s in range(20000):
+        e = exact_sample(4, seed=s, **w)
+        e = e[0] if isinstance(e, tuple) else e
+        py[",".join(map(str, np.asarray(e, int).ravel()))] += 1
+
+    assert len(js) == 42, f"JS chain reached {len(js)} configurations, not 42"
+    assert set(js) == set(py), "the two samplers do not agree on the support"
+
+    nj, np_ = sum(js.values()), sum(py.values())
+    chi = 0.0
+    dof = -1
+    for k in set(js) | set(py):
+        a, b = js.get(k, 0), py.get(k, 0)
+        tot = a + b
+        if tot < 20:
+            continue
+        ea, eb = tot * nj / (nj + np_), tot * np_ / (nj + np_)
+        chi += (a - ea) ** 2 / ea + (b - eb) ** 2 / eb
+        dof += 1
+    assert chi2_dist.sf(chi, dof) > 0.001, f"chi2 {chi:.1f} on {dof} dof"
