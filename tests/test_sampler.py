@@ -5709,3 +5709,73 @@ def test_delta_drives_coalescence_too_not_only_n():
         assert claim not in code, (
             f"the warning still tells the user {claim!r}, which the "
             f"measurements above contradict")
+
+
+def test_the_documented_size_limits_are_the_enforced_ones():
+    """Each endpoint's n range is a promise; check it at the boundary.
+
+    The README says out-of-range values "return 400 rather than being
+    silently adjusted", and quotes 250 for /api/exact/start. The other two
+    limits differ (4..400 for the stochastic sampler, 6..160 for general
+    domains) and the domain one was not written down anywhere, so a caller
+    could only discover it by being refused.
+
+    Checked AT the boundary in both directions, because an off-by-one here
+    is invisible from inside the range: the limit itself must be accepted
+    and one past it refused.
+    """
+    import server
+
+    c = server.app.test_client()
+    started = []
+
+    def post(path, body, n):
+        d = dict(body)
+        d["n"] = n
+        if path == "/api/domain/start" and n >= 6:
+            d["x_cuts"] = [max(1, n // 3), max(2, 2 * n // 3)]
+            d["y_cuts"] = [max(1, n // 3), max(2, 2 * n // 3)]
+        r = c.post(path, json=d)
+        j = r.get_json() or {}
+        if j.get("job_id"):
+            started.append(j["job_id"])
+        return r.status_code
+
+    cases = [
+        ("/api/exact/start", {"a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                              "c_up": 1, "c_down": 1}, 4, 250),
+        ("/api/stochastic", {"b1": 0.3, "b2": 0.7}, 4, 400),
+        ("/api/domain/start", {"a1": 1, "a2": 1, "b1": 1, "b2": 1,
+                               "c_up": 2, "c_down": 2,
+                               "I": [[1, 1, 1], [0, 1, 1], [0, 0, 1]]}, 6, 160),
+    ]
+    try:
+        for path, body, lo, hi in cases:
+            assert post(path, body, lo - 1) == 400, f"{path}: n={lo-1} accepted"
+            assert post(path, body, lo) == 200, f"{path}: n={lo} refused"
+            assert post(path, body, hi) == 200, f"{path}: n={hi} refused"
+            assert post(path, body, hi + 1) == 400, f"{path}: n={hi+1} accepted"
+            assert post(path, body, 10 ** 6) == 400, f"{path}: huge n accepted"
+    finally:
+        with server._jobs_lock:
+            for j in started:
+                server._jobs.pop(j, None)
+
+    # sweeps are rejected rather than clamped, which is the failure the
+    # README calls out by name: running 500 for a request that asked 9999
+    # leaves the caller believing the chain is far better equilibrated
+    init = c.post("/api/init", json={"n": 8, "a1": 1, "a2": 1, "b1": 1,
+                                     "b2": 1, "c_up": 1, "c_down": 1}).get_json()
+    sid = init["session_id"]
+    assert c.post("/api/step", json={"sweeps": 500, "session_id": sid}).status_code == 200
+    r = c.post("/api/step", json={"sweeps": 9999, "session_id": sid})
+    assert r.status_code == 400, "an oversized sweep count was accepted"
+    assert "frame" not in (r.get_json() or {}), "sweeps were clamped, not refused"
+
+    # and every limit must appear in the README, since that is where a
+    # caller looks before being refused
+    import pathlib
+    readme = (pathlib.Path(__file__).resolve().parent.parent
+              / "README.md").read_text()
+    for value in ("250", "400", "160"):
+        assert value in readme, f"the limit {value} is not documented"

@@ -326,6 +326,10 @@ saying which blocks are kept). Returns `job_id`; poll
 carries an extra `domain_b64` mask of `n²` bytes marking which cells belong
 to the region.
 
+`n` must lie in `6..160` here (CFTP on a general domain is the `~n^4` path,
+and the mask makes each sweep dearer than on the square); `/api/exact/start`
+allows `4..250` and `/api/stochastic` `4..400`.
+
 Fixed at `k = l = 3`, which is where Gorin suggested starting: the awkward
 part for general `k` and `l` is the interface, not the algorithm. Rejections
 are specific and up-front — a non-convex `I`, cuts that are not strictly
