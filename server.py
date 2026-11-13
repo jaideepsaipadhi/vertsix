@@ -149,7 +149,7 @@ def _run_exact_job(job_id, n, a1, a2, b1, b2, c1, c2, seed):
             H = H.astype(np.float32)
         elif in_monotone_region(w):
             # CFTP with the correct four-face rule is valid on the whole
-            # region b1b2 >= a1a2 and b1b2 >= c1c2, not merely at the uniform
+            # region c1c2 >= a1a2 and c1c2 >= b1b2, not merely at the uniform
             # point. Outside that region no coupling of the single-site update
             # is monotone (the marginals are not ordered), so there is no CFTP
             # scheme to fall back on -- hence the refusal below rather than a
@@ -161,10 +161,10 @@ def _run_exact_job(job_id, n, a1, a2, b1, b2, c1, c2, seed):
             raise RuntimeError(
                 f"No exact method is available here. The sequential sampler is "
                 f"limited to n <= {MAX_EXACT_N} (its cost grows exponentially "
-                f"with n), and CFTP requires b1b2 >= a1a2 and b1b2 >= c1c2 "
+                f"with n), and CFTP requires c1c2 >= a1a2 and c1c2 >= b1b2 "
                 f"(here A={A:.4g}, B={B:.4g}, C={C:.4g}); outside that region "
                 f"no monotone coupling of the update exists. Reduce n to "
-                f"{MAX_EXACT_N} or below, or choose weights with b1b2 "
+                f"{MAX_EXACT_N} or below, or choose weights with c1c2 "
                 f"dominant."
             )
 

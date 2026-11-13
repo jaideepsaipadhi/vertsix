@@ -176,15 +176,27 @@
   // client and server gating drift apart.
   let MAX_EXACT_N = 14;
 
+  // Above this n, CFTP is still exact but the wait becomes noticeable
+  // (~18 s per sample at n = 128 on the reference machine, growing like n^4).
+  const CFTP_SLOW_N = 128;
+
   function isExactSafe(w, n) {
     // Small n: the sequential transfer-matrix sampler handles any weights.
-    // Large n: CFTP, which is monotone exactly on b1b2 >= a1a2 and
-    // b1b2 >= c1c2 -- a region, not just the uniform point. Outside it no
+    // Large n: CFTP, which is monotone exactly on c1c2 >= a1a2 and
+    // c1c2 >= b1b2 -- a region, not just the uniform point. Outside it no
     // monotone coupling of the update exists at all, so there is nothing to
     // fall back on.
+    // The tolerance is relative to the scale of the products: the measure is
+    // invariant under scaling all six weights, so this test must be too, and
+    // it must agree with in_monotone_region() on the server exactly -- a
+    // disagreement either offers a button the server then refuses, or hides
+    // one it would have honoured.
     if (n <= MAX_EXACT_N) return true;
     const A = w.a1 * w.a2, B = w.b1 * w.b2, C = w.c1 * w.c2;
-    return C >= A - 1e-12 && C >= B - 1e-12;
+    const scale = Math.max(A, B, C);
+    if (!(scale > 0)) return false;
+    const eps = 1e-12 * scale;
+    return C >= A - eps && C >= B - eps;
   }
 
   function pairedSlider(sliderA, outA, sliderB, outB) {
@@ -227,9 +239,17 @@
 
     const a1a2 = w.a1 * w.a2, b1b2 = w.b1 * w.b2, c1c2 = w.c1 * w.c2;
     const delta = (a1a2 + b1b2 - c1c2) / (2 * Math.sqrt(a1a2 * b1b2));
+    // Delta = +-1 are the phase BOUNDARIES, in neither open phase. Naming
+    // them is not pedantry here: the two panels disagreed about which side
+    // Delta = 1 fell on -- this one called it "disordered" while the
+    // stochastic panel hardcoded "(ferroelectric)" for a quantity that is
+    // exactly 1 whenever b1 = b2, which is where both sliders sit by default.
+    const EPS = 1e-9;
     let regime;
-    if (delta > 1) regime = "ferroelectric";
-    else if (delta < -1) regime = "antiferroelectric";
+    if (delta > 1 + EPS) regime = "ferroelectric";
+    else if (delta < -1 - EPS) regime = "antiferroelectric";
+    else if (Math.abs(delta - 1) <= EPS) regime = "boundary (Δ = 1)";
+    else if (Math.abs(delta + 1) <= EPS) regime = "boundary (Δ = −1)";
     else regime = "disordered";
     if (w.a1 === 1 && w.a2 === 1 && w.b1 === 1 && w.b2 === 1 && w.c1 === 1 && w.c2 === 1) regime += " (uniform weights)";
     deltaDisplay.textContent = `${delta.toFixed(2)} \u00b7 ${regime}`;
@@ -250,24 +270,37 @@
     // Warn when CFTP is valid but likely to be impractically slow.
     //
     // Being inside the monotone region guarantees correctness, not speed.
-    // Coalescence time grows exponentially in n deep in the ferroelectric
-    // phase: measured at Delta=5, the two extremal chains took 78, 1956 and
-    // 32506 sweeps to meet at n = 6, 8, 10 -- roughly 20x per step of two,
-    // where n^2 growth would be about 1.6x. The onset is near Delta = 2
-    // (at n=12: ~100 sweeps below Delta 1.5, 293 at Delta 2, 4564 at
-    // Delta 3), so warn from there rather than at the phase boundary.
+    // This warning used to trigger on Delta > 2, from measurements taken
+    // under the old labelling, where b and c were swapped and the region was
+    // b-dominant, so Delta could run off to +infinity inside it. With the
+    // labels corrected the region is c-dominant, and there C >= max(A, B)
+    // forces
+    //     Delta = (A + B - C) / (2 sqrt(AB)) <= min(A,B) / (2 sqrt(AB)) <= 1/2,
+    // so Delta > 2 is unreachable and the warning could never fire. (Checked
+    // against the predicate over 133k random points inside the region: the
+    // largest Delta seen was 0.4887.)
+    //
+    // Re-measured in the corrected region, Delta turns out not to drive the
+    // cost at all -- at n = 48 the median sweeps to coalescence are 4096 at
+    // Delta = +0.5, 0.0 and -3.0 alike. n drives it: median sweeps 2048,
+    // 4096, 16384, 32768 at n = 32, 48, 64, 96, i.e. about n^2, and each
+    // sweep is itself n^2, giving ~n^4 overall (measured 0.17s, 0.45s, 1.45s
+    // and 6.3s per sample at those n). So the warning keys on n.
     const A = w.a1 * w.a2, B = w.b1 * w.b2, C = w.c1 * w.c2;
     const dlt = (A + B - C) / (2 * Math.sqrt(A * B));
     const slowNote = document.getElementById("slow-exact-note");
     if (slowNote) {
-      const risky = safe && n > MAX_EXACT_N && dlt > 2;
+      const risky = safe && n > CFTP_SLOW_N;
       slowNote.style.display = risky ? "block" : "none";
       if (risky) {
         slowNote.textContent =
-          `\u0394 = ${dlt.toFixed(2)} is deep in the ordered phase. Exact ` +
-          `sampling is still valid here, but the time for the two chains to ` +
-          `meet grows exponentially with n, so this may not finish. Reduce n ` +
-          `or \u0394 if it stalls.`;
+          `Exact sampling at n = ${n} is valid but slow. CFTP's cost is set ` +
+          `by n, not by \u0394: the sweeps needed for the two chains to meet ` +
+          `grow about like n\u00b2, and each sweep is another n\u00b2, so ` +
+          `the total grows roughly like n\u2074. On the reference machine ` +
+          `that is about 6 s per sample at n = 96, a minute or two by ` +
+          `n = 200, and well over ten minutes by n = 400. Reduce n if it ` +
+          `stalls; \u0394 will not help.`;
       }
     }
     btnExact.style.opacity = safe ? "1" : "0.4";
@@ -278,9 +311,12 @@
         `Exact sampling for non-uniform weights uses an exact sequential ` +
         `(transfer-matrix) method whose cost grows exponentially with n, so ` +
         `it is limited to n &le; ${MAX_EXACT_N}. Beyond that, the only exact ` +
-        `method available (CFTP) requires c1c2 &ge; a1a2 and c1c2 &ge; b1b2 ` +
-        `(all weights = 1). Reduce n to ${MAX_EXACT_N} or below, or set all ` +
-        `weights to 1.00.`;
+        `method available (CFTP) requires c1c2 &ge; a1a2 and c1c2 &ge; b1b2, ` +
+        `which these weights miss (a1a2 = ${A.toPrecision(4)}, ` +
+        `b1b2 = ${B.toPrecision(4)}, c1c2 = ${C.toPrecision(4)}). Reduce n ` +
+        `to ${MAX_EXACT_N} or below, or raise c1c2 until it is the largest ` +
+        `of the three &mdash; the whole region qualifies, not only the ` +
+        `uniform point.`;
     }
   }
 
@@ -1277,8 +1313,14 @@
       const d = (b1 + b2) / (2 * Math.sqrt(b1 * b2));
       document.getElementById("sb1-out").textContent = b1.toFixed(2);
       document.getElementById("sb2-out").textContent = b2.toFixed(2);
+      // AM-GM gives d >= 1 always, with equality exactly at b1 = b2, so the
+      // label cannot be a constant: at equal sliders this is the boundary,
+      // not the ferroelectric phase.
+      const dReg = d > 1 + 1e-9
+        ? "ferroelectric"
+        : "boundary (b\u2081 = b\u2082)";
       document.getElementById("stoch-delta").textContent =
-        `\u0394 = ${d.toFixed(3)}  (ferroelectric)`;
+        `\u0394 = ${d.toFixed(3)} \u00b7 ${dReg}`;
     }
   }
 

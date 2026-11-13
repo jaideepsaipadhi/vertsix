@@ -22,8 +22,18 @@ function classifyFace(tl, tr, bl, br, w) {
   if (l && t && b && r) return w.a2;
   if (l && t && !b && !r) return w.c1;
   if (!l && !t && b && r) return w.c2;
-  if (!l && t && b && !r) return w.b1;
-  if (l && !t && !b && r) return w.b2;
+  // Gorin-Kenyon Types 3 and 4: b1 is the HORIZONTAL through-vertex and b2
+  // the vertical one. The b1/b2 correction reached exact.py, cftp_exact.py,
+  // domains.py and draw.js but missed this file, so the local chain weighted
+  // the vertical face as b1 while the legend beside it said b2.
+  //
+  // This does not change the measure, and provably cannot: under DWBC every
+  // configuration has #b1 = #b2, so exchanging the two labels multiplies
+  // each weight by (b1/b2)^0 = 1. It is a naming inconsistency, not a
+  // sampling error -- but it is the same inconsistency Gorin flagged, and
+  // leaving one copy of it behind defeats the point of fixing the others.
+  if (!l && t && b && !r) return w.b2;   // vertical through
+  if (l && !t && !b && r) return w.b1;   // horizontal through
   return 1;
 }
 

@@ -1249,7 +1249,7 @@ def test_arctic_circle_appears_in_an_exact_sample():
 
 
 def test_cftp_valid_on_the_whole_monotone_region():
-    """CFTP is monotone exactly on b1b2 >= a1a2 and b1b2 >= c1c2, not merely at
+    """CFTP is monotone exactly on c1c2 >= a1a2 and c1c2 >= b1b2, not merely at
     the uniform point. The shipped code used to restrict it to all-weights-1
     because the old module hardcoded p_up = c1/(c1+c2), correct only there.
 
@@ -3776,3 +3776,556 @@ def test_the_stochastic_sliders_agree_with_the_vertex_legend():
                   int(h[i, j + 1])), "invalid")
         for i in range(n) for j in range(n))
     assert c["b1"] > 10 * max(c["b2"], 1), dict(c)
+
+
+def test_every_stated_monotone_region_agrees_with_the_predicate():
+    """Each prose statement of the CFTP region must be the region.
+
+    The authoritative region is in_monotone_region(). It has been stated in
+    prose in five other places: a user-facing error message in each of the two
+    server endpoints, a comment beside each of the two gating calls, and a test
+    docstring. One of those copies (the DWBC endpoint's error message) carried
+    b and c swapped -- the same swap that cftp_exact.py records having fixed in
+    its own docstring -- and so told a user who hit the refusal to move their
+    weights further OUT of the valid region.
+
+    A string comparison would only pin today's wording. Instead this harvests
+    every "<pair> >= <pair> and <pair> >= <pair>" sentence from the tree and
+    evaluates it as a predicate against in_monotone_region on random weights,
+    so any restatement that is not the region fails whatever words surround it.
+    """
+    import re, random, pathlib
+    from sixvertex.cftp_exact import in_monotone_region
+
+    PAIR = {"a1a2": ("a1", "a2"), "b1b2": ("b1", "b2"), "c1c2": ("c1", "c2")}
+    # The clauses are joined by "and" in most copies and by a comma in
+    # domains.py, so accept either.
+    SEP = r"(?:\s+and\s+|\s*,\s*)"
+    pat = re.compile(
+        r"(a1a2|b1b2|c1c2)\s*>=\s*(a1a2|b1b2|c1c2)" + SEP +
+        r"(a1a2|b1b2|c1c2)\s*>=\s*(a1a2|b1b2|c1c2)", re.S)
+    # cftp_exact.py's module docstring states the region in letter variables
+    # with a legend beside it. That form escaped this check entirely, which is
+    # how the pre-correction statement "B >= A and B >= C" survived there --
+    # contradicting the corrected docstring sixteen lines below it, at the top
+    # of the very module that defines the predicate.
+    letters = re.compile(
+        r"([ABC])\s*>=\s*([ABC])" + SEP + r"([ABC])\s*>=\s*([ABC])", re.S)
+    legend = re.compile(
+        r"A\s*=\s*a1a2\s*,\s*B\s*=\s*b1b2\s*,\s*C\s*=\s*c1c2")
+    LETTER = {"A": "a1a2", "B": "b1b2", "C": "c1c2"}
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    found = []
+    for path in sorted(root.rglob("*")):
+        if path.suffix not in (".py", ".js", ".html") or "node_modules" in path.parts:
+            continue
+        text = path.read_text(errors="ignore")
+        # Collapse the line breaks and comment/f-string furniture that these
+        # sentences are wrapped in, so a statement split over two lines is
+        # still seen as one.
+        # Collapse line breaks together with the comment and string-literal
+        # furniture on BOTH sides of them. Stripping only the leading quote of
+        # a continuation line left a stray quote between "and" and the second
+        # clause, which is how three more copies hid from this check.
+        flat = re.sub(r'["\']?[\n\r]+\s*(?://|\#|f["\']|["\'])?\s*', " ", text)
+        # Three spellings are in use across the tree: c1c2 (comments, the
+        # server messages), c1*c2 (the package-level ValueError) and the
+        # HTML-entity &ge; (the browser's gate note). Normalise all of them,
+        # or a copy escapes the check by how it is written.
+        flat = flat.replace("&ge;", ">=").replace("\u2265", ">=")
+        # Subscript markup too: index.html writes the same sentence as
+        # c<sub>1</sub>c<sub>2</sub> &ge; ..., which matched nothing until
+        # the tags were stripped -- a statement can hide from this check
+        # behind its own markup.
+        flat = re.sub(r"</?su[bp]>", "", flat)
+        flat = re.sub(r"([abc])1\s*\*\s*([abc])2", r"\g<1>1\g<2>2", flat)
+        hits = [(m, m.group(0)) for m in pat.finditer(flat)]
+        if legend.search(flat):
+            for m in letters.finditer(flat):
+                hits.append((m, " ".join(
+                    LETTER[g] if i % 2 == 0 else g
+                    for i, g in enumerate(
+                        [m.group(1), ">=", m.group(2), "and",
+                         m.group(3), ">=", m.group(4)]))))
+        for m, stmt in hits:
+            if "it read" in flat[max(0, m.start() - 40):m.start()]:
+                continue  # the historical note recording the old error
+            found.append((path.relative_to(root), stmt))
+
+    assert len(found) >= 5, f"expected the known restatements, found {found}"
+
+    rng = random.Random(20261113)
+    for rel, stmt in found:
+        m = pat.search(stmt)
+        l1, r1, l2, r2 = (PAIR[g] for g in m.groups())
+        for _ in range(400):
+            w = {k: rng.choice([0.2, 0.5, 1.0, 1.7, 3.0]) for k in
+                 ("a1", "a2", "b1", "b2", "c1", "c2")}
+            prod = lambda p: w[p[0]] * w[p[1]]
+            stated = (prod(l1) >= prod(r1) - 1e-12 and
+                      prod(l2) >= prod(r2) - 1e-12)
+            assert stated == in_monotone_region(w), (
+                f"{rel} states '{stmt}', which disagrees with "
+                f"in_monotone_region at {w}")
+
+
+def test_the_monotone_gate_is_scale_invariant_and_agrees_across_languages():
+    """Scaling all six weights must not change whether CFTP is offered.
+
+    The Boltzmann measure is invariant under w -> lambda*w, so the monotone
+    predicate must be. With an absolute tolerance it was not: a=b=1, c=1/2 is
+    outside the region and was refused at lambda=1 but ACCEPTED at lambda=1e-6,
+    because the products themselves fell below the 1e-12 tolerance. That is the
+    bad direction -- CFTP would run with no monotone coupling, so coalescence
+    no longer certifies anything and the sample is silently off-measure.
+
+    The browser carries its own copy of the gate (isExactSafe in draw.js) to
+    decide whether to offer exact sampling at all, so the two must agree
+    weight-for-weight; this runs the shipped JS in node against the Python.
+    """
+    import json, random, shutil, subprocess, pathlib
+    from sixvertex.cftp_exact import in_monotone_region
+
+    rng = random.Random(815)
+    cases = []
+    # the known failure, swept over scale, in both directions
+    for lam in (1e-8, 1e-6, 1e-3, 1.0, 1e3, 1e6):
+        for c in (0.5, 1.0, 1.4, 2.0):
+            cases.append({"a1": lam, "a2": lam, "b1": lam, "b2": lam,
+                          "c1": c * lam, "c2": c * lam})
+    # and a random battery spanning many orders of magnitude
+    for _ in range(300):
+        e = lambda: 10.0 ** rng.uniform(-8, 8)
+        cases.append({k: e() for k in ("a1", "a2", "b1", "b2", "c1", "c2")})
+
+    # scale invariance of the authoritative predicate
+    for w in cases:
+        base = in_monotone_region(w)
+        for lam in (1e-6, 1e-3, 1e3, 1e6):
+            scaled = {k: v * lam for k, v in w.items()}
+            if not all(0 < v < float("inf") for v in scaled.values()):
+                continue  # scaling itself overflowed; not a claim about the gate
+            assert in_monotone_region(scaled) == base, (
+                f"gate changed under scaling by {lam}: {w}")
+
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available to check the browser copy of the gate")
+
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "static" / "draw.js").read_text()
+    start = src.index("function isExactSafe")
+    end = src.index("\n  }", start) + 4
+    body = src[start:end].replace("MAX_EXACT_N", "14")
+    script = (body + "\nconst cases = " + json.dumps(cases) + ";\n"
+              "console.log(JSON.stringify("
+              "cases.map(w => isExactSafe(w, 64))));\n")
+    out = subprocess.run([node, "-e", script], capture_output=True,
+                         text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    js = json.loads(out.stdout)
+
+    for w, got in zip(cases, js):
+        assert got == in_monotone_region(w), (
+            f"draw.js isExactSafe disagrees with in_monotone_region at {w}: "
+            f"js={got} python={in_monotone_region(w)}")
+
+
+def test_cftp_matches_brute_force_at_six_distinct_weights():
+    """The existing brute-force check runs at a1=a2, b1=b2, c1=c2.
+
+    At such a pairwise-symmetric point any bug that uses one member of a pair
+    twice -- a1*a1 where a1*a2 was meant, the error-shape behind the b1/b2 and
+    b/c label mixups already found here -- is invisible, because both readings
+    give the same number. This runs the same comparison with all six weights
+    distinct and the three products distinct, where such a slip moves the
+    measure, and scores it with a chi-square over all 42 configurations rather
+    than a max-deviation bound.
+
+    (A genuine relabelling WITHIN a pair stays invisible to any distributional
+    test, and provably so: under DWBC #a1=#a2, #b1=#b2 and #c1-#c2=n, so every
+    configuration's weight is (a1a2)^#a1 (b1b2)^#b1 (c1c2)^#c2 times the
+    constant c1^n -- the measure sees only the three products. That is why the
+    vertex naming had to be settled against a published convention and not
+    against data. This test pins the products.)
+    """
+    from sixvertex.cftp_exact import cftp_sample, in_monotone_region
+
+    n = 4
+    w = dict(a1=0.7, a2=1.3, b1=0.5, b2=1.6, c1=1.1, c2=2.3)
+    assert len(set(w.values())) == 6
+    A, B, C = w["a1"]*w["a2"], w["b1"]*w["b2"], w["c1"]*w["c2"]
+    assert len({round(A, 12), round(B, 12), round(C, 12)}) == 3
+    assert in_monotone_region(w), "test point must be inside the CFTP region"
+
+    cfgs, probs, _ = exact_distribution(n, w)
+    assert len(cfgs) == 42, f"n=4 DWBC has 42 states, got {len(cfgs)}"
+    keys = {c.astype(np.int64).tobytes(): i for i, c in enumerate(cfgs)}
+
+    N = 6000
+    counts = np.zeros(len(cfgs))
+    for seed in range(N):
+        H, _ = cftp_sample(n, w, master_seed=777000 + seed)
+        k = keys.get(np.asarray(H, dtype=np.int64).tobytes())
+        assert k is not None, "CFTP produced a configuration outside the state space"
+        counts[k] += 1
+
+    expected = probs * N
+    assert expected.min() > 5.0, (
+        f"chi-square needs every expected count above 5, min is "
+        f"{expected.min():.2f} -- raise N")
+    chi2 = float(((counts - expected) ** 2 / expected).sum())
+    dof = len(cfgs) - 1
+    try:
+        from scipy.stats import chi2 as chi2_dist
+        p = float(chi2_dist.sf(chi2, dof))
+    except ImportError:
+        # Wilson-Hilferty normal approximation, accurate to ~1e-3 here
+        z = ((chi2 / dof) ** (1/3) - (1 - 2/(9*dof))) / math.sqrt(2/(9*dof))
+        p = 0.5 * math.erfc(z / math.sqrt(2))
+    assert p > 1e-3, (
+        f"CFTP does not reproduce the exact measure at asymmetric weights: "
+        f"chi2={chi2:.1f} on {dof} dof, p={p:.2e}")
+
+
+def test_delta_is_bounded_by_one_half_inside_the_monotone_region():
+    """Inside the CFTP region Delta can never exceed 1/2.
+
+    C >= max(A, B) gives A + B - C <= min(A, B), so
+
+        Delta = (A + B - C) / (2 sqrt(AB)) <= min(A,B) / (2 sqrt(AB))
+              = sqrt(min(A,B)/max(A,B)) / 2 <= 1/2,
+
+    with equality only at A = B = C. The browser used to warn about slow
+    coalescence when Delta > 2, a threshold carried over from the old
+    labelling where the region was b-dominant and Delta was unbounded inside
+    it. After the b/c correction that warning could never fire, so the one
+    piece of UI meant to flag an impractical run was dead. It now keys on n,
+    which is what the measurements say drives the cost (at n = 48 the median
+    sweeps to coalescence are 4096 at Delta = +0.5, 0.0 and -3.0 alike).
+
+    This pins the bound, so a future Delta-keyed threshold above 1/2 is
+    recognisably unreachable rather than quietly dead.
+    """
+    import random
+    from sixvertex.cftp_exact import in_monotone_region
+
+    def delta_of(w):
+        A, B = w["a1"]*w["a2"], w["b1"]*w["b2"]
+        return (A + B - w["c1"]*w["c2"]) / (2 * math.sqrt(A * B))
+
+    rng = random.Random(1909)
+    worst, inside = -math.inf, 0
+    for _ in range(60000):
+        w = {k: 10.0 ** rng.uniform(-3, 3)
+             for k in ("a1", "a2", "b1", "b2", "c1", "c2")}
+        if not in_monotone_region(w):
+            continue
+        inside += 1
+        worst = max(worst, delta_of(w))
+    assert inside > 5000, f"too few in-region samples ({inside}) to conclude"
+    assert worst <= 0.5 + 1e-9, f"Delta reached {worst} inside the region"
+
+    # equality is attained, so 1/2 is the true supremum and not a loose bound
+    eq = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=1.0)
+    assert in_monotone_region(eq)
+    assert abs(delta_of(eq) - 0.5) < 1e-12
+
+    # and the shipped warning must not be gated on Delta any more
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "static" / "draw.js").read_text()
+    i = src.index("const risky =")
+    trigger = src[i:src.index(";", i)]
+    assert "dlt" not in trigger, (
+        f"the slow-sampling warning is gated on Delta again ({trigger!r}); "
+        f"inside the region Delta <= 1/2, so such a threshold cannot fire")
+    assert "CFTP_SLOW_N" in trigger, trigger
+
+
+def test_all_five_vertex_label_tables_agree():
+    """Every encoding of (l,t,b,r) -> label in the tree must give one answer.
+
+    The labelling is written out five times: domains.FACE, exact._face_weight,
+    cftp_exact._weight_table, classifyBits in draw.js, and classifyFace in
+    static/sixvertex.js. The b1/b2 correction against Gorin-Kenyon reached the
+    first four and missed the fifth, so the in-browser chain weighted the
+    vertical through-vertex as b1 while the legend printed beside it said b2.
+    A sixth, unused copy sat at the top of cftp_exact.py disagreeing with that
+    module's own table.
+
+    No distributional test can catch this: under DWBC every configuration has
+    #b1 = #b2 (and #c1 - #c2 = n), so exchanging b1 and b2 multiplies every
+    weight by (b1/b2)^0 = 1 and leaves the measure exactly invariant. That is
+    precisely why it has to be pinned by cross-checking the tables against
+    each other rather than by sampling.
+    """
+    import json, pathlib, shutil, subprocess
+    from sixvertex.domains import FACE
+    from sixvertex.cftp_exact import _weight_table
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    bits = [(0, 0, 0, 0), (1, 1, 1, 1), (1, 1, 0, 0),
+            (0, 0, 1, 1), (0, 1, 1, 0), (1, 0, 0, 1)]
+    assert set(FACE) == set(bits), FACE
+
+    # distinct weights, so every label is told apart by its value
+    w = {"a1": 2.0, "a2": 3.0, "b1": 5.0, "b2": 7.0, "c1": 11.0, "c2": 13.0}
+    by_value = {v: k for k, v in w.items()}
+    assert len(by_value) == 6
+
+    # 1. domains.FACE is the reference
+    ref = {b: FACE[b] for b in bits}
+
+    # 2. cftp_exact's packed 16-entry table
+    tbl = _weight_table(w)
+    for (l, t, b, r) in bits:
+        got = by_value.get(float(tbl[l*8 + t*4 + b*2 + r]))
+        assert got == ref[(l, t, b, r)], (
+            f"cftp_exact._weight_table calls {(l,t,b,r)} {got}, "
+            f"domains.FACE calls it {ref[(l,t,b,r)]}")
+
+    # Corner heights realising each edge pattern. _face_weight and the
+    # browser's classifyFace both take the four corners rather than the edge
+    # bits (top = tr-tl, bottom = br-bl, left = bl-tl, right = br-tr), and the
+    # ice rule makes the fourth difference follow from the other three.
+    corners = {}
+    for (l, t, b, r) in bits:
+        tl = 0
+        tr, bl = tl + t, tl + l
+        br = bl + b
+        assert br - tr == r, (l, t, b, r)
+        corners[(l, t, b, r)] = (tl, tr, bl, br)
+
+    # 3. exact.py's per-face weight
+    from sixvertex.exact import _face_weight
+    for bb in bits:
+        tl, tr, bl, br = corners[bb]
+        got = by_value.get(float(_face_weight(tl, tr, bl, br, w)))
+        assert got == ref[bb], (
+            f"exact._face_weight calls {bb} {got}, "
+            f"domains.FACE calls it {ref[bb]}")
+
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available to check the two browser tables")
+
+    # 4. classifyBits in draw.js -- returns the label name directly
+    src = (root / "static" / "draw.js").read_text()
+    i = src.index("function classifyBits")
+    body = src[i:src.index("\n  }", i) + 4]
+    script = (body + "\nconsole.log(JSON.stringify(" + json.dumps(bits) +
+              ".map(([l,t,b,r]) => classifyBits(!!l,!!t,!!b,!!r))));")
+    out = subprocess.run([node, "-e", script], capture_output=True,
+                         text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    for bb, got in zip(bits, json.loads(out.stdout)):
+        assert got == ref[bb], (
+            f"draw.js classifyBits calls {bb} {got}, "
+            f"domains.FACE calls it {ref[bb]}")
+
+    # 5. classifyFace in static/sixvertex.js -- returns the WEIGHT, and takes
+    #    corner heights rather than edge bits, so feed it corners that realise
+    #    each pattern: top=tr-tl, bottom=br-bl, left=bl-tl, right=br-tr.
+    src2 = (root / "static" / "sixvertex.js").read_text()
+    j = src2.index("function classifyFace")
+    body2 = src2[j:src2.index("\n}", j) + 2]
+    script2 = (body2 + "\nconst w = " + json.dumps(w) + ";\n"
+               "console.log(JSON.stringify(" + json.dumps([list(corners[b]) for b in bits]) +
+               ".map(([tl,tr,bl,br]) => classifyFace(tl,tr,bl,br,w))));")
+    out2 = subprocess.run([node, "-e", script2], capture_output=True,
+                          text=True, timeout=120)
+    assert out2.returncode == 0, out2.stderr
+    for bb, val in zip(bits, json.loads(out2.stdout)):
+        got = by_value.get(float(val))
+        assert got == ref[bb], (
+            f"sixvertex.js classifyFace calls {bb} {got}, "
+            f"domains.FACE calls it {ref[bb]}")
+
+
+def test_the_in_browser_sampler_at_six_distinct_weights():
+    """The companion check runs at a1=a2, b1=b2, c1=c2, where the chain's
+    b-branches are indistinguishable from each other.
+
+    Instrumenting classifyFace showed those branches are live -- over 40 sweeps
+    at n=24 they fired 3653 and 4035 times -- so the b1/b2 labelling genuinely
+    changes the local acceptance probabilities, even though it cannot change
+    the stationary measure (#b1 = #b2 under DWBC). The symmetric test point
+    cannot see any of that. This one runs with all six weights distinct, where
+    every branch carries a different number, and compares the whole 42-state
+    distribution against the sequential exact sampler.
+
+    (The instrumentation also showed the `return 1` fallback for a face
+    matching none of the six patterns never fires, as the flippability guard
+    at the top of the update implies: a site is only touched when its four
+    neighbours are equal.)
+    """
+    import collections, json, os, shutil, subprocess, tempfile
+
+    import pytest
+    from scipy.stats import chi2 as chi2_dist
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+
+    w = dict(a1=0.7, a2=1.3, b1=0.5, b2=1.6, c1=1.1, c2=2.3)
+    assert len(set(w.values())) == 6
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "..", "static", "sixvertex.js")).read()
+    driver = src + """
+const w = """ + json.dumps(w) + """;
+const s = new SixVertexJS(4, w, 20261113);
+s.step(5000);
+const t = new Map();
+for (let k = 0; k < 40000; k++) { s.step(4);
+  const key = Array.from(s.H).join(",");
+  t.set(key, (t.get(key) || 0) + 1); }
+console.log(JSON.stringify(Array.from(t)));
+"""
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "drv.js")
+        open(p, "w").write(driver)
+        out = subprocess.run([node, p], capture_output=True, text=True,
+                             timeout=600)
+    assert out.returncode == 0, out.stderr[:400]
+    js = dict(json.loads(out.stdout))
+    assert len(js) == 42, f"JS chain reached {len(js)} configurations, not 42"
+
+    # exact probabilities, not a second sample: no Monte Carlo error on this side
+    cfgs, probs, _ = exact_distribution(4, w)
+    exact = {",".join(map(str, np.asarray(c, int).ravel())): float(pr)
+             for c, pr in zip(cfgs, probs)}
+    assert set(js) == set(exact), "the chain and the exact measure disagree on the support"
+
+    N = sum(js.values())
+    chi, dof = 0.0, -1
+    for k, pr in exact.items():
+        e = pr * N
+        if e < 5:
+            continue
+        chi += (js.get(k, 0) - e) ** 2 / e
+        dof += 1
+    assert dof > 30, f"too few cells ({dof + 1}) to conclude"
+    pval = float(chi2_dist.sf(chi, dof))
+    assert pval > 1e-3, (
+        f"the in-browser chain does not reproduce the exact measure at "
+        f"asymmetric weights: chi2={chi:.1f} on {dof} dof, p={pval:.2e}")
+
+
+def test_cftp_sample_does_not_depend_on_where_the_doubling_starts():
+    """The property that makes CFTP exact, checked directly.
+
+    CFTP is exact because the random field at time -k is fixed once and REUSED
+    by every attempt: _rand_field(master_seed, k, shape) is a pure function of
+    the seed and k, never of T. If an implementation instead redraws the
+    randomness each time it doubles T -- the classic way to get this wrong --
+    it still coalesces and still returns plausible pictures, but the output is
+    no longer the composed map applied from the infinite past, and the measure
+    is biased.
+
+    The signature of doing it right: once the two chains have met by time -T,
+    running from any earlier -T' gives the SAME configuration, because the map
+    from -T' to 0 factors through a map that is already constant. So sweeping
+    the starting T must not move the answer by a single site.
+
+    This is the one exactness check that works where brute force cannot. The
+    chi-square tests pin the measure at n=4, over 42 states; this holds at
+    n=32, where the state space is far past enumeration.
+    """
+    import numpy as np
+    from sixvertex.cftp_exact import cftp_sample
+
+    w = dict(a1=0.7, a2=1.3, b1=0.5, b2=1.6, c1=1.1, c2=2.3)
+    starts = (1, 3, 7, 64, 1000)
+
+    for n in (6, 12, 24, 32):
+        for seed in (11, 12):
+            results, finals = [], []
+            for T0 in starts:
+                H, info = cftp_sample(n, w, master_seed=seed, initial_T=T0)
+                results.append(np.asarray(H, dtype=np.int64).tobytes())
+                finals.append(info["sweeps"])
+            assert len(set(results)) == 1, (
+                f"n={n} seed={seed}: the sample depends on the starting T "
+                f"(final T values {finals}) -- the random field is not being "
+                f"reused across attempts, so the output is not exact")
+            # the runs must genuinely have differed, or this proves nothing
+            assert len(set(finals)) > 1, (
+                f"n={n} seed={seed}: every start produced the same final T "
+                f"({finals}); the test did not exercise distinct schedules")
+
+    # and a different seed must give a different answer, so the above is not
+    # passing merely because the sampler ignores its randomness
+    a = cftp_sample(16, w, master_seed=1, initial_T=8)[0]
+    b = cftp_sample(16, w, master_seed=2, initial_T=8)[0]
+    assert np.asarray(a).tobytes() != np.asarray(b).tobytes(), (
+        "two different master seeds gave identical samples")
+
+
+def test_the_monotone_region_boundary_is_real_in_both_directions():
+    """The refusal outside the region must be substantive, not defensive.
+
+    Everything rests on one claim: the coupling of the two extremal chains
+    driven by shared uniforms preserves Hlo <= Hhi exactly on
+    c1c2 >= a1a2 and c1c2 >= b1b2. The other tests here check that the code
+    SAYS the right region (every prose copy is harvested and evaluated against
+    the predicate) -- but agreement among statements proves nothing if the
+    predicate itself names the wrong set. This checks the predicate against
+    the behaviour it predicts, in both directions:
+
+      inside   -> the order Hlo <= Hhi is never violated;
+      outside  -> it is violated, more often the further out you go, and far
+                  enough out the chains stop meeting at all.
+
+    Measured at n=10: 0 violations inside at three separate weight points, 13
+    to 40 just outside at c=0.9, and about 1750 at c=0.5. So the boundary is
+    where the predicate puts it, and the b/c swap that this file has had to
+    correct twice would show up here as acceptance of non-monotone weights.
+    """
+    import numpy as np
+    import sixvertex.cftp_exact as ce
+
+    inside = [
+        (dict(a1=0.7, a2=1.3, b1=0.5, b2=1.6, c1=1.1, c2=2.3), "asymmetric"),
+        (dict(a1=1., a2=1., b1=1., b2=1., c1=1., c2=1.), "uniform"),
+        (dict(a1=1., a2=1., b1=1., b2=1., c1=2.83, c2=2.83), "Delta=-3"),
+    ]
+    for w, lbl in inside:
+        assert ce.in_monotone_region(w), lbl
+        for seed in (1, 2, 3):
+            _, info = ce.cftp_sample(10, w, master_seed=seed,
+                                     check_monotone=True)
+            assert info["monotonicity_violations"] == 0, (
+                f"{lbl}: the coupling broke order inside the region "
+                f"({info['monotonicity_violations']} violations)")
+
+    # Outside, the refusal has to be bypassed to observe what it is protecting
+    # against. Restore the predicate whatever happens.
+    real = ce.in_monotone_region
+    try:
+        ce.in_monotone_region = lambda w, tol=1e-12: True
+        for c in (0.9, 0.5):
+            w = dict(a1=1., a2=1., b1=1., b2=1., c1=c, c2=c)
+            assert not real(w), f"c={c} should be outside the region"
+            seen = []
+            for seed in (1, 2, 3):
+                try:
+                    _, info = ce.cftp_sample(10, w, master_seed=seed,
+                                             check_monotone=True,
+                                             max_T=1 << 12)
+                    seen.append(info["monotonicity_violations"])
+                except RuntimeError:
+                    seen.append(None)  # never coalesced: also a failure
+            assert all(v is None or v > 0 for v in seen), (
+                f"at c={c}, outside the region, the coupling stayed ordered "
+                f"({seen}) -- either the predicate is too conservative or the "
+                f"check is not looking at anything")
+    finally:
+        ce.in_monotone_region = real
+
+    assert ce.in_monotone_region is real

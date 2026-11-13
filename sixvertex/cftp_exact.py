@@ -8,7 +8,7 @@ The correct single-site rule is the four-face heat-bath probability (the same
 one `sampler.py` uses), and the coupling of the two extremal chains driven by
 shared uniforms is monotone exactly on
 
-    B >= A   and   B >= C,        A = a1a2, B = b1b2, C = c1c2
+    C >= A   and   C >= B,        A = a1a2, B = b1b2, C = c1c2
 
 so CFTP is valid on that whole region, not merely at the point. Outside it no
 coupling is monotone at all -- the marginals are not ordered there -- so this
@@ -18,9 +18,13 @@ from __future__ import annotations
 
 import numpy as np
 
-FACE = {(0, 0, 0, 0): "a1", (1, 1, 1, 1): "a2",
-        (1, 1, 0, 0): "c1", (0, 0, 1, 1): "c2",
-        (0, 1, 1, 0): "b1", (1, 0, 0, 1): "b2"}
+# The (l,t,b,r) -> label map lives in domains.FACE, which is the single
+# source for it; _weight_table below is the only encoding of it in this
+# module. An unused copy used to sit here, and after the b1/b2 correction it
+# disagreed with that table: it still called (0,1,1,0) b1 where the table
+# calls it b2. Nothing imported it, so it changed no result -- it was just a
+# second answer to the question, sitting at the top of the module that owns
+# the first one.
 
 
 def in_monotone_region(w, tol=1e-12):
@@ -37,11 +41,26 @@ def in_monotone_region(w, tol=1e-12):
     region *contains* Delta < -1 rather than excluding it: Gorin's Figure 17
     bottom (a=b=1, c=sqrt(8), Delta=-3) lies inside it and can be sampled
     exactly.
+
+    The tolerance is relative to the scale of the products, not absolute.
+    The Boltzmann measure is invariant under scaling all six weights by a
+    common lambda (the factor cancels against the partition function), so
+    this predicate must be too. With an absolute tol, it was not: the
+    non-monotone point a=b=1, c=1/2 was correctly refused at lambda=1 and
+    accepted at lambda=1e-6, where the products are themselves below 1e-12.
+    CFTP would then have run on it without a monotone coupling, which makes
+    its coalescence test meaningless -- a silently wrong sample rather than
+    the refusal the caller relies on. Weights are only required to be
+    finite and positive, so that scale is reachable from the API.
     """
     A = w["a1"] * w["a2"]
     B = w["b1"] * w["b2"]
     C = w["c1"] * w["c2"]
-    return (C >= A - tol) and (C >= B - tol)
+    scale = max(A, B, C)
+    if not scale > 0.0:
+        return False
+    eps = tol * scale
+    return (C >= A - eps) and (C >= B - eps)
 
 
 def _weight_table(w):
