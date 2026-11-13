@@ -3959,7 +3959,7 @@ def test_every_stated_monotone_region_agrees_with_the_predicate():
     root = pathlib.Path(__file__).resolve().parent.parent
     found = []
     for path in sorted(root.rglob("*")):
-        if path.suffix not in (".py", ".js", ".html") or "node_modules" in path.parts:
+        if path.suffix not in (".py", ".js", ".html", ".md") or "node_modules" in path.parts:
             continue
         text = path.read_text(errors="ignore")
         # Collapse the line breaks and comment/f-string furniture that these
@@ -3980,6 +3980,12 @@ def test_every_stated_monotone_region_agrees_with_the_predicate():
         # the tags were stripped -- a statement can hide from this check
         # behind its own markup.
         flat = re.sub(r"</?su[bp]>", "", flat)
+        # Markdown wraps these in backticks, and the prose files are where
+        # the statement is most load-bearing: README's routing section told
+        # readers CFTP applies on "b1b2 >= a1a2 and b1b2 >= c1c2" -- the
+        # pre-correction region -- two hundred lines above the passage
+        # explaining that very correction.
+        flat = flat.replace("`", "")
         flat = re.sub(r"([abc])1\s*\*\s*([abc])2", r"\g<1>1\g<2>2", flat)
         hits = [(m, m.group(0)) for m in pat.finditer(flat)]
         if legend.search(flat):
@@ -3990,8 +3996,20 @@ def test_every_stated_monotone_region_agrees_with_the_predicate():
                         [m.group(1), ">=", m.group(2), "and",
                          m.group(3), ">=", m.group(4)]))))
         for m, stmt in hits:
-            if "it read" in flat[max(0, m.start() - 40):m.start()]:
-                continue  # the historical note recording the old error
+            # Historical notes legitimately quote the old region while
+            # explaining the correction, so there has to be a way to write
+            # one. The convention: lead in with "it read" / "hand read" /
+            # "used to", or follow the quote with "old label" or
+            # "pre-correction". Anything else quoting the old region is
+            # treated as a live claim and fails, which is what this check is
+            # for. (This comment is itself an example -- quoting the
+            # pre-correction region needs the marker like any other.)
+            before = flat[max(0, m.start() - 60):m.start()]
+            after = flat[m.end():m.end() + 60]
+            if ("it read" in before or "hand read" in before
+                    or "used to" in before or "old label" in after
+                    or "pre-correction" in after):
+                continue
             found.append((path.relative_to(root), stmt))
 
     assert len(found) >= 5, f"expected the known restatements, found {found}"
@@ -5539,3 +5557,62 @@ def test_a_negative_seed_is_accepted_everywhere_and_nothing_returns_a_500():
         with server._jobs_lock:
             for j in started:
                 server._jobs.pop(j, None)
+
+
+def test_the_svg_export_is_independent_of_the_camera():
+    """The README promises two different things of the two exports.
+
+    "PNG is a screenshot and honours the current zoom and pan, so a
+    zoomed-in view exports a crop; SVG exports the complete configuration
+    regardless of zoom or pan."
+
+    Verified in a browser at n=12: zooming in changed the PNG (20449 ->
+    19484 bytes) and left the SVG byte-identical, with 144 = 12*12 rects
+    either way. This pins it structurally so it cannot drift: the SVG
+    builder must not read the camera, and the PNG path must go through the
+    canvas, which is what makes it a screenshot.
+
+    A documented export behaviour is the kind of thing someone relies on
+    without re-checking -- a figure for a paper is exported once -- so the
+    failure would be a silently cropped lattice in a published figure.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    js = (root / "static" / "draw.js").read_text()
+    code = "\n".join(ln for ln in js.splitlines()
+                     if not ln.strip().startswith("//"))
+
+    i = code.index("btnSaveSvg.addEventListener")
+    depth, j = 0, code.index("{", i)
+    k = j
+    while k < len(code):
+        if code[k] == "{":
+            depth += 1
+        elif code[k] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        k += 1
+    svg_handler = code[j:k + 1]
+
+    assert "<svg" in svg_handler or "svg" in svg_handler.lower(), svg_handler[:200]
+    for forbidden in ("camera", "baseScale(", "devicePixelRatio"):
+        assert forbidden not in svg_handler, (
+            f"the SVG export reads {forbidden!r}; it is documented to export "
+            f"the complete configuration regardless of zoom or pan, so it "
+            f"must not depend on the camera")
+
+    # and it must cover the whole lattice: a loop over n, not over what is
+    # currently visible
+    assert re.search(r"for\s*\(\s*(let|var)\s+\w+\s*=\s*0\s*;\s*\w+\s*<\s*n",
+                     svg_handler), (
+        "the SVG export does not loop over the full lattice:\n"
+        + svg_handler[:300])
+
+    # the PNG path, by contrast, is the canvas itself -- that is what makes
+    # it honour zoom and pan
+    i = code.index("btnSave.addEventListener")
+    png_handler = code[i:i + 600]
+    assert "toDataURL" in png_handler or "toBlob" in png_handler, png_handler[:300]

@@ -126,8 +126,13 @@ Controls:
 - **reset** — reinitialize with current n/weights.
 - **run / pause** — continuously sample, client-side.
 - **step** — advance one batch of sweeps manually.
-- **exact sample (CFTP)** — see below. Disabled (with an explanation)
-  unless a1=a2=b1=b2=1 exactly. Shows live elapsed time while running.
+- **exact sample** — see below. Enabled for *any* weights at n ≤ 14 (the
+  sequential sampler), and beyond that whenever `c1c2 >= a1a2` and
+  `c1c2 >= b1b2`, where CFTP is valid; disabled with an explanation outside
+  both. (This line used to read "disabled unless a1=a2=b1=b2=1 exactly",
+  which was the gate before CFTP was corrected to cover the whole monotone
+  region, and told readers the headline feature was far narrower than it
+  is.) Shows live elapsed time while running.
 - **save PNG / save SVG** — export. PNG is a screenshot and honours the
   current zoom and pan, so a zoomed-in view exports a crop; SVG exports the
   complete configuration regardless of zoom or pan. See Pan / zoom / export
@@ -164,7 +169,7 @@ Exact sampling now works as follows:
   no mixing time and no monotonicity requirement -- it is exact even deep in
   the ferroelectric/antiferroelectric regimes where local MCMC freezes.
   Verified against brute force to machine precision.
-- **n > 14, with `b1b2 >= a1a2` and `b1b2 >= c1c2`:** CFTP
+- **n > 14, with `c1c2 >= a1a2` and `c1c2 >= b1b2`:** CFTP
   (`sixvertex/cftp_exact.py`), using the correct four-face heat-bath rule.
   The shared-uniform coupling of the extremal chains is monotone exactly on
   this region, so CFTP is valid throughout it — not merely at the uniform

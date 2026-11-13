@@ -121,33 +121,47 @@ attempt.
 
 - The Propp-Wilson CFTP argument itself (monotone coupling + coalescence
   implies exact sampling) is a standard, published theorem.
-- **Whether the specific move above is monotone is not something we have
-  a citation for.** It is checked empirically: thousands of coupled
-  half-sweeps with zero ordering violations observed, at multiple values
-  of `c1, c2` including deep ferroelectric/antiferroelectric ratios (we
-  specifically tested c1=c2=sqrt(8), Delta=-3). We also independently
-  cross-validated CFTP's output statistics against long, independent
-  live-MCMC runs of the same restricted (a=b=1) dynamics, and against
-  brute-force-enumerated exact distributions for small n (n≤4, where
-  every valid configuration can be listed directly and weighted exactly).
-- We do **not** have a monotonicity proof or disproof for the general
-  (a1, a2, b1, b2 not all 1) case, and empirically it fails: a shared-seed
-  coupling of the general dynamics was observed to violate ordering within
-  about 50 sweeps in testing. This is why the UI disables Exact Sample
-  outside a1=a2=b1=b2=1.
+- **Whether the specific move above is monotone is a hand calculation, not
+  a citation.** It gives the region `c1c2 >= a1a2`, `c1c2 >= b1b2`, and it
+  is checked empirically in BOTH directions, because a check that only ever
+  passes cannot tell a real boundary from a vacuous one: zero ordering
+  violations inside the region (uniform weights; six distinct weights
+  0.7, 1.3, 0.5, 1.6, 1.1, 2.3; and `c1=c2=sqrt(8)` at `Delta=-3`), against
+  13--40 violations just outside at `c=0.9`, about 1750 at `c=0.5`, and no
+  coalescence at all at `c=0.2`.
+- The output is cross-validated against brute-force-enumerated exact
+  distributions for small `n` -- at `n=4` over all 42 configurations, both
+  at symmetric weights and at six distinct ones. The second point matters:
+  a pairwise-symmetric test point hides any error that uses one member of a
+  weight pair twice, which is the shape of the labelling errors this project
+  has actually had.
+- CFTP's defining property is checked directly: for a fixed master seed the
+  sample must not depend on where the doubling schedule starts, because the
+  per-step randomness is a function of `(master_seed, k)` alone. Five
+  starting values, reaching five different final `T`, give bit-identical
+  configurations at `n` up to 32 -- the one exactness check that works where
+  brute force cannot. An implementation that redraws its randomness at each
+  doubling still coalesces and still returns plausible pictures, so
+  coalescence alone would not catch it.
 
-If you have a proof, a counterexample, or a reference for the a=b=1
-monotonicity claim, please open an issue — we would genuinely like to
-either cite it or correct the claim.
+This section previously recorded the opposite conclusion for non-uniform
+weights -- no proof, "empirically it fails", and the UI restricted to
+`a1=a2=b1=b2=1`. All three were true of the move this code used then, which
+hardcoded `p_up = c1/(c1+c2)` and is correct only at the uniform point. The
+UI now gates on the region above, not on the uniform point.
 
 
 ---
 
 # Exact sequential sampling (`sixvertex/exact.py`)
 
-This is the method now used for all non-uniform weights. It is exact by
-construction and does **not** involve a Markov chain, so questions of
-mixing time and monotonicity do not arise at all.
+This is the method used for every weight choice at `n <= 14`, and the only
+exact method available at any `n` outside the monotone region. (It used to
+be described here as "the method now used for all non-uniform weights",
+which stopped being true once CFTP was corrected to cover the whole region
+rather than the uniform point.) It is exact by construction and does **not**
+involve a Markov chain, so questions of mixing time and monotonicity do not
+arise at all.
 
 ## Method
 
@@ -170,19 +184,40 @@ current one, so the resulting configuration is an exact draw from the
 Boltzmann distribution. This is standard transfer-matrix / dynamic-
 programming sampling; nothing here is novel, it is simply the right tool.
 
-## Why this succeeds where CFTP fails
+## Why this succeeds where CFTP does not reach
 
-CFTP needs a *monotone* coupling of two extremal chains. For non-uniform
-weights, the correct single-site move is provably not monotone: the
-acceptance probability depends on the SW and NE diagonal neighbours, and one
-can construct valid ordered pairs of states where the lower chain's flip-up
-probability strictly exceeds the upper chain's -- so the chains can cross.
-This was confirmed empirically for several coupling constructions (naive
-shared-randomness, and shared-uniform-with-own-local-probability), each of
-which violated ordering within ~100 sweeps.
+CFTP needs a *monotone* coupling of two extremal chains, and that is
+available on a region, not everywhere.
 
-Sequential sampling never compares two chains, so this obstruction is simply
-absent.
+This section used to say that the single-site move is "provably not monotone"
+for non-uniform weights, full stop. That was written about the move this code
+used at the time, which hardcoded `p_up = c1/(c1+c2)` and targets the right
+measure only at the uniform point. With the four-face heat-bath rule the
+coupling driven by shared uniforms is monotone exactly on
+
+    c1c2 >= a1a2   and   c1c2 >= b1b2
+
+which is a region, not a point, and `cftp_exact.py` samples throughout it.
+The earlier crossing experiments (naive shared-randomness, and
+shared-uniform-with-own-local-probability) were constructions of the old
+move, and say nothing about this one.
+
+Measured with the ordering checked at every half-sweep, n = 10--12:
+
+| weights | in the region | ordering violations |
+|---|---|---|
+| `a=b=c=1` (uniform) | yes | 0 |
+| `a1,a2,b1,b2,c1,c2 = 0.7,1.3,0.5,1.6,1.1,2.3` | yes | 0 |
+| `a=b=1, c=2.83` (`Delta=-3`) | yes | 0 |
+| `a=b=1, c=0.9` | no | 13--40 |
+| `a=b=1, c=0.5` | no | ~1750 |
+| `a=b=1, c=0.2` | no | never coalesces |
+
+So the obstruction is real, but it lives *outside* the region. Inside it,
+CFTP is the method of choice at large `n`; the sequential sampler is what
+covers small `n` at **any** weights, including the ones outside the region
+where no monotone coupling exists at all. Sequential sampling never compares
+two chains, so the obstruction is simply absent there.
 
 ## Cost, and the honest limitation
 
