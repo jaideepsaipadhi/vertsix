@@ -1645,6 +1645,48 @@
           rects += `<rect x="${j * cell}" y="${i * cell}" width="${cell}" height="${cell}" fill="rgb(${r},${g},${b})"/>`;
         }
       }
+    } else if (viewMode.value === "paths") {
+      // The export must be the picture on the screen. "paths" and "fluct"
+      // used to fall through to the height colour map below, so asking for an
+      // SVG of the lattice paths silently handed back a smoothed height
+      // field instead -- a different picture of the same sample, which is the
+      // worst kind of wrong for a figure going into a paper.
+      //
+      // Same geometry as drawPaths: a stub from each face centre to every
+      // occupied edge, black on white.
+      rects += `<rect x="0" y="0" width="${size}" height="${size}" fill="#ffffff"/>`;
+      const wpx = Math.max(0.4, Math.min(cell * 0.16, 10 * cell / n));
+      let d = "";
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          const fb = faceBits(lastFrame, i, j);
+          if (fb === null) continue;
+          const cx = (j + 0.5) * cell, cy = (i + 0.5) * cell;
+          if (fb.l) d += `M${cx} ${cy}L${j * cell} ${cy}`;
+          if (fb.r) d += `M${cx} ${cy}L${(j + 1) * cell} ${cy}`;
+          if (fb.t) d += `M${cx} ${cy}L${cx} ${i * cell}`;
+          if (fb.b) d += `M${cx} ${cy}L${cx} ${(i + 1) * cell}`;
+        }
+      }
+      rects += `<path d="${d}" stroke="${PATH_INK}" stroke-width="${wpx}" ` +
+               `fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+    } else if (viewMode.value === "fluct" && fluctFrame) {
+      const F = fluctFrame;
+      let m = 1e-9;
+      for (let i = 0; i <= n; i++)
+        for (let j = 0; j <= n; j++) m = Math.max(m, Math.abs(F.get(i, j)));
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          if (!faceInDomain(lastFrame, i, j)) continue;
+          const v = (F.get(i, j) + F.get(i + 1, j) +
+                     F.get(i, j + 1) + F.get(i + 1, j + 1)) / 4 / m;
+          const t = Math.max(-1, Math.min(1, v));
+          let r, g, b;
+          if (t >= 0) { r = 255; g = Math.round(255 * (1 - t)); b = g; }
+          else        { b = 255; r = Math.round(255 * (1 + t)); g = r; }
+          rects += `<rect x="${j * cell}" y="${i * cell}" width="${cell}" height="${cell}" fill="rgb(${r},${g},${b})"/>`;
+        }
+      }
     } else {
       const min = lastFrame.min, max = lastFrame.max;
       const span = Math.max(1, max - min);

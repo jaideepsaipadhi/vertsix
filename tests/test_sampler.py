@@ -3518,3 +3518,39 @@ def test_stochastic_height_and_arrows_are_sent_in_the_same_orientation():
         assert np.array_equal(H[i, :] - H[i + 1, :], h[m, :].astype(np.int64)), (
             f"height and arrows disagree at screen row {i}: the two views "
             f"would be vertical mirrors of each other")
+
+
+def test_svg_export_handles_every_view_mode():
+    """The exported file must be the picture on the screen.
+
+    The export dispatched on "active" and "vertex6" and sent everything else
+    to the height colour map. So asking for an SVG of the LATTICE PATHS --
+    the view Gorin was told to open, and the one anyone would export for a
+    figure -- silently returned a smoothed height field instead: a different
+    picture of the same sample, which is the worst way for an export to be
+    wrong. "fluct" had the same fault, returning the plain height map rather
+    than the red/blue fluctuation field.
+
+    Checks that every option in the view menu is named in the export, so a
+    new view cannot be added without deciding how it exports.
+    """
+    import re
+
+    html = open("static/index.html").read()
+    sel = html[html.index('<select id="viewmode">'):]
+    sel = sel[:sel.index("</select>")]
+    views = re.findall(r'value="([^"]+)"', sel)
+    assert set(views) >= {"height", "active", "vertex6", "paths", "fluct"}, views
+
+    js = open("static/draw.js").read()
+    export = js[js.index('btnSaveSvg.addEventListener'):]
+    export = export[:export.index('link.download = "six-vertex-sample.svg"')]
+    for v in views:
+        if v == "height":
+            continue          # the fall-through default, correctly
+        assert f'"{v}"' in export, (
+            f'the SVG export never mentions the "{v}" view, so it falls '
+            f'through to the height colour map and exports a different '
+            f'picture than the one on screen')
+    # the paths export must draw strokes, not a grid of filled cells
+    assert "stroke" in export and "<path d=" in export
