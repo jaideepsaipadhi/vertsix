@@ -47,6 +47,17 @@ class SixVertexSampler:
 
     @staticmethod
     def extremal_height(n: int, kind: str):
+        """Minimal ("lo") or maximal ("hi") DWBC height function.
+
+        Validated for the reason spelled out on cftp_exact.extremal_height:
+        the else-branch used to absorb every misspelling and return the hi
+        height, which in a CFTP context starts both chains from one state and
+        turns a wrong measure into a report of faster coalescence.
+        """
+        if kind not in ("lo", "hi"):
+            raise ValueError(
+                f"kind must be 'lo' or 'hi', got {kind!r}; anything but 'lo' "
+                f"used to return the 'hi' height silently")
         i = np.arange(n + 1).reshape(-1, 1).astype(np.float32)
         j = np.arange(n + 1).reshape(1, -1).astype(np.float32)
         corners = [(0, 0, 0), (n, 0, n), (0, n, n), (n, n, 0)]

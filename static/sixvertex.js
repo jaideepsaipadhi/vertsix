@@ -1,4 +1,15 @@
+// Minimal ("lo") or maximal ("hi") DWBC height function.
+//
+// kind is validated, matching the two Python copies. The ternary below used
+// to treat every value that was not "lo" as "hi", so a misspelling returned
+// the wrong extremal state silently -- and draw.js's makeShadow now depends
+// on this function for the shadow chain's start, where getting "hi" when you
+// asked for "lo" means both chains start together and the equilibration
+// badge can never report anything but equilibrium.
 function extremalHeight(n, kind) {
+  if (kind !== "lo" && kind !== "hi") {
+    throw new Error(`extremalHeight: kind must be "lo" or "hi", got ${JSON.stringify(kind)}`);
+  }
   const size = n + 1;
   const H = new Float64Array(size * size);
   const corners = [[0, 0, 0], [n, 0, n], [0, n, n], [n, n, 0]];

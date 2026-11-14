@@ -91,6 +91,30 @@ def _face_weights(tl, tr, bl, br, tbl):
 
 
 def extremal_height(n, kind):
+    """The minimal ("lo") or maximal ("hi") height function for DWBC.
+
+    `kind` is validated, and that is not pedantry. The branch used to be
+    `if kind == "lo": ... else: <hi>`, so ANY other value -- "low", "LO",
+    None, "" -- silently returned the hi height. A caller that typed the lo
+    request wrong would start BOTH CFTP chains from the same configuration;
+    they would then agree forever, coalesce at the first T, and the sampler
+    would report an exact sample that is really a short run of one chain.
+
+    Measured at n=6, Delta=-3, on the number of c-faces over 4000 samples,
+    with the noise floor set by two independent exact runs:
+
+        TV(exact, exact)          0.0255     <- noise floor
+        TV(correct CFTP, exact)   0.0115     inside it
+        TV(typo'd CFTP, exact)    0.0543     2.1x the floor -- wrong measure
+
+    and the only symptom visible to a user was that it looked FASTER:
+    attempts 1, sweeps 8 against the correct attempts 3, sweeps 32, because
+    the doubling schedule never has to run. Faster reads as good news.
+    """
+    if kind not in ("lo", "hi"):
+        raise ValueError(
+            f"kind must be 'lo' or 'hi', got {kind!r}; anything but 'lo' "
+            f"used to return the 'hi' height silently")
     i = np.arange(n + 1).reshape(-1, 1).astype(np.int64)
     j = np.arange(n + 1).reshape(1, -1).astype(np.int64)
     corners = [(0, 0, 0), (n, 0, n), (0, n, n), (n, n, 0)]

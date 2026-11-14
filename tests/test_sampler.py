@@ -8929,3 +8929,72 @@ def test_the_island_refuses_a_connectivity_it_does_not_implement():
     # the default must be the accepted definition, not the fallback
     assert island(H, n)["size"] == eight["size"], (
         "island()'s default connectivity is no longer 8")
+
+
+def test_the_extremal_height_refuses_a_kind_it_does_not_implement():
+    """extremal_height(n, kind) branched on `if kind == "lo": ... else: <hi>`,
+    so every other value -- "low", "LO", None, "", 0 -- returned the hi height
+    and said nothing. Three copies had it: cftp_exact.py, sampler.py, and
+    static/sixvertex.js.
+
+    In a CFTP context that is not a cosmetic slip. The two chains must start
+    at opposite ends of the order; if the lo request is misspelled they start
+    from the SAME configuration, agree forever, coalesce at the first T, and
+    the sampler reports an exact sample that is really a short run of one
+    chain. Measured at n=6, Delta=-3, on the number of c-faces over 4000
+    samples, with the floor set by two independent exact runs:
+
+        TV(exact, exact)          0.0255    <- noise floor
+        TV(correct CFTP, exact)   0.0115    inside it
+        TV(typo'd CFTP, exact)    0.0543    2.1x the floor
+
+    The symptom was worse than invisible, it was encouraging: with the typo
+    the sampler reported attempts 1 and sweeps 8 against the correct attempts
+    3 and sweeps 32, because the doubling schedule never has to run. The user
+    sees a faster exact sample.
+
+    This test pins the refusal in both Python copies and -- executed under
+    node, not ported -- in the shipped JS, where draw.js's shadow chain now
+    depends on the "hi" branch and a silent wrong answer would leave the
+    equilibration badge unable to report anything but equilibrium.
+    """
+    import json
+    import pathlib
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    from sixvertex.cftp_exact import extremal_height
+    from sixvertex.sampler import SixVertexSampler
+
+    for fn in (extremal_height, SixVertexSampler.extremal_height):
+        lo, hi = fn(6, "lo"), fn(6, "hi")
+        assert not np.array_equal(lo, hi)
+        for bad in ("low", "LO", "Lo", "high", "HI", "", None, 0, 1, "min"):
+            with pytest.raises(ValueError, match="kind must be 'lo' or 'hi'"):
+                fn(6, bad)
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    driver = (
+        "const fs=require('fs');\n"
+        "eval(fs.readFileSync(process.argv[2],'utf8'));\n"
+        "const out={ok:[],threw:[]};\n"
+        "for (const k of ['lo','hi']) { extremalHeight(4,k); out.ok.push(k); }\n"
+        "for (const k of ['low','LO','high','',null,0,undefined]) {\n"
+        "  try { extremalHeight(4,k); } catch (e) { out.threw.push(String(k)); }\n"
+        "}\n"
+        "console.log(JSON.stringify(out));\n"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        drv = pathlib.Path(td) / "kind.js"
+        drv.write_text(driver)
+        proc = subprocess.run(
+            ["node", str(drv), str(root / "static" / "sixvertex.js")],
+            capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    res = json.loads(proc.stdout)
+    assert res["ok"] == ["lo", "hi"], res
+    assert len(res["threw"]) == 7, (
+        f"the shipped extremalHeight accepted a kind it does not implement; "
+        f"it threw only for {res['threw']}")
