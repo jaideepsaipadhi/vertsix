@@ -54,10 +54,32 @@ quarter of N: demanding a span of N/2, as an earlier version did, asks the
 island to be twice the size it ever reaches, and that alone held P below 0.4
 at Delta=-3 where the island is unmistakable.
 
-Measured at n=64 with 40 samples per point, this gives P = 0.00 at
-Delta = -0.5, -0.75 and -1.0, then 0.03, 0.07, 0.30, 0.68 at -1.25, -1.5,
--2.0 and -3.0: zero above the transition and rising below it, with the onset
-at Delta = -1.
+WHERE IT TURNS ON, and the earlier overstatement. A 40-sample run at n=64 gave
+P = 0.00 at Delta = -0.5, -0.75 and -1.0 and this note read "the onset at
+Delta = -1" off it. That does not survive more samples. Pooling the committed
+island_exists_sample.csv (80 samples) with a disjoint-seed run of 120 more, so
+200 samples per point at n=64:
+
+    Delta      hits/200    P
+    -0.75         0/200    0.000
+    -1.00         2/200    0.010
+    -1.25         6/200    0.030
+    -1.50        23/200    0.115
+
+So P is not zero at Delta = -1 -- two hits in 200 put it near 1%, with a
+binomial interval that excludes zero -- and it only reaches 0.5 somewhere
+between Delta = -2 and -3. The predicate's crossover therefore sits at about
+-1.5 to -2 at these N, which is exactly what experiments/island_order.py says
+of it, and the two notes used to disagree about the same measurement. The
+honest reading is that P stays at the per-cent level down to Delta = -1 and
+climbs below it; the crossing predicate is biased deep by construction (see
+island_order.py), so it cannot locate the transition on its own.
+
+The ordering in the committed CSV at n=64 -- 0.0250 at Delta = -1.0 against
+0.0125 at -1.25 -- was noise, and the 120-sample run reverses it (0.000 then
+0.0417). The continuous companion, the mean widest extent, is monotone in
+Delta at every size and is the thing to read for a trend at these sample
+counts: at n=32, 0.25, 0.39, 0.52, 0.84 at Delta = -0.75, -1.0, -1.5, -3.0.
 
 DEFINITIONS THAT FAIL, recorded so the ground is not covered twice:
 

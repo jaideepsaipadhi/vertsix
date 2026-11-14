@@ -6163,9 +6163,87 @@ def test_the_shift_chain_centres_its_cells_on_the_data_not_on_zero():
             f"n={n}: the three cells around the mode {mode} hold {covered} of "
             f"{ks.size} observations, so the spacing is not 1")
 
+    # the shared helper -- one copy, used by run_shift_chain and
+    # run_shift_delta_chain, which both had the bug independently
+    from experiments.run_shift_chain import cells_from_chains
+
+    for n, ks in seen.items():
+        mode, per = cells_from_chains([ks])
+        assert sum(per[0]) == ks.size, (n, mode, per, ks.size)
+
     # and the old hardcoded triple really did miss everything at n = 18
     ks18 = seen[18]
     hardcoded = int(((ks18 == -1) | (ks18 == 0) | (ks18 == 1)).sum())
     assert hardcoded == 0, (
         "n=18 now lands on integer k, so this test no longer demonstrates why "
         "the centring has to come from the data")
+
+
+def test_the_crossing_predicate_turns_on_below_minus_one_not_at_it():
+    """island_exists.py claimed "the onset at Delta = -1" from 40 samples.
+
+    200 samples at n=64 put P at 0.010 at Delta = -1.0 and 0.115 at -1.5, so
+    the predicate's crossover is near -1.5 to -2 -- which is what
+    island_order.py already said of the same measurement, the two notes having
+    disagreed. Asserted here on the cheap size, where the signal is the same
+    shape: the continuous companion (mean widest extent) is monotone in Delta,
+    and P is still small at -1 while large at -3.
+    """
+    import numpy as np
+
+    from experiments.island_exists import island_exists
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import cftp_sample
+
+    n, reps = 32, 30
+    P, W = {}, {}
+    for d in (-0.75, -1.0, -1.5, -3.0):
+        w = weights_for_delta(d)
+        hits, ext = 0, []
+        for s in range(reps):
+            H, _ = cftp_sample(n, w, master_seed=777_000 + 53 * s)
+            ok, _lvl, e = island_exists(H, n)
+            hits += int(ok)
+            ext.append(e)
+        P[d], W[d] = hits / reps, float(np.mean(ext))
+
+    order = [W[d] for d in (-0.75, -1.0, -1.5, -3.0)]
+    assert order == sorted(order), (
+        f"the mean widest extent is not monotone in Delta: {W}")
+    assert P[-1.0] <= 0.2, (
+        f"P({n}, Delta=-1) = {P[-1.0]}, so the predicate is firing at the "
+        f"claimed transition rather than below it")
+    assert P[-3.0] >= 0.4, f"P({n}, Delta=-3) = {P[-3.0]}, too low to be a test"
+    assert P[-3.0] > 2 * P[-1.0] + 0.1, (P[-1.0], P[-3.0])
+
+
+def test_every_grid_cell_of_experiment_one_gets_its_own_seeds():
+    """run_mixing.py ran seeds 0..199 in every (n, Delta) cell.
+
+    The per-cell medians are unbiased either way, but it is exactly the error
+    run_shift.py documents -- "the same seeds producing the same islands, not
+    two independent agreements" -- and measured at n=16 between Delta=-1.0 and
+    -1.25 the shared seeds correlate the coalescence times (Spearman rho 0.248,
+    p=0.026) while disjoint ones do not (-0.140, p=0.22).
+
+    Pinned on the property: every cell of the default grid, and of a wider one,
+    draws from its own seed range. The sign of Delta has to be carried, since
+    abs(delta) collides +0.5 with -0.5.
+    """
+    from experiments.run_mixing import seed_block
+
+    ns = [12, 16, 24, 32, 40, 64, 80]
+    deltas = [0.5, 0.25, 0.0, -0.25, -0.5, -0.75, -1.0, -1.25, -1.5, -2.0,
+              -2.5, -3.0, -4.0, -5.0]
+    cells = [(n, d) for n in ns for d in deltas]
+    blocks = {c: set(seed_block(c[0], c[1], 200)) for c in cells}
+
+    assert all(len(b) == 200 for b in blocks.values())
+    for i, a in enumerate(cells):
+        for b in cells[i + 1:]:
+            assert not (blocks[a] & blocks[b]), (
+                f"cells {a} and {b} share seeds "
+                f"{sorted(blocks[a] & blocks[b])[:4]}")
+
+    # +0.5 and -0.5 are the pair that an unsigned encoding merges
+    assert not (blocks[(16, 0.5)] & blocks[(16, -0.5)])

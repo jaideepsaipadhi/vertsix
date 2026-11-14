@@ -132,6 +132,20 @@ def pooled_mode(all_ks):
     return float(vals[int(np.argmax(cnt))])
 
 
+def cells_from_chains(all_ks):
+    """(mode, per-chain (lo, mode, hi) counts) for a list of chain outputs.
+
+    One copy of the counting, used by this script and by
+    run_shift_delta_chain.py. The duplication is why the hardcoded-cell bug
+    had to be fixed twice.
+    """
+    mode = pooled_mode(all_ks)
+    per = [(int((np.asarray(ks) == mode - 1).sum()),
+            int((np.asarray(ks) == mode).sum()),
+            int((np.asarray(ks) == mode + 1).sum())) for ks in all_ks]
+    return mode, per
+
+
 def mu_sigma_from_ratios(r_lo, r_hi):
     """Closed form for the discrete Gaussian from the two neighbour ratios.
 
@@ -185,7 +199,7 @@ def main():
                                          seed=10_000 + c, start_seed=20_000 + c))
         print(f"  chain {c:3d} swept   [{time.time()-t0:5.0f}s]", flush=True)
 
-    mode = pooled_mode(chains)
+    mode, cells = cells_from_chains(chains)
     print(f"\n  mode cell k={mode:+.2f} (n={args.n}, n mod 4 = {args.n % 4}); "
           f"neighbours {mode - 1:+.2f} and {mode + 1:+.2f}")
 
@@ -194,10 +208,7 @@ def main():
         wr = csv.writer(fh)
         wr.writerow(["n", "delta", "chain", "k_lo", "k_mode", "k_hi", "meas",
                      "thin", "mode"])
-        for c, ks in enumerate(chains):
-            lo = int((ks == mode - 1).sum())
-            mo = int((ks == mode).sum())
-            hi = int((ks == mode + 1).sum())
+        for c, (lo, mo, hi) in enumerate(cells):
             per.append((lo, mo, hi))
             wr.writerow([args.n, args.delta, c, lo, mo, hi, args.meas,
                          args.thin, mode])
@@ -228,13 +239,17 @@ def main():
                                     ("k=mode+1", sum(p[2] for p in per)))
              if tot == 0]
     if empty:
-        print(f"\n  CANNOT SOLVE for (mu, sigma): the cell(s) {', '.join(empty)} "
-              f"are empty.\n  The closed form needs all three consecutive cells "
-              f"occupied -- two cells fix\n  neither parameter. At n = 2 mod 4 "
-              f"this is the usual state of affairs at\n  moderate sample sizes: "
-              f"the lattice offset puts the mode next to one\n  populated "
-              f"neighbour and one far tail, so the ratios are reported but mu\n"
-              f"  and sigma are not identified. Sample longer or use n = 0 mod 4.")
+        why = ("At n = 2 mod 4 the lattice offset puts the mode next to one\n"
+               "  populated neighbour and one far tail, so this is the usual "
+               "state of\n  affairs there at moderate sample sizes."
+               if args.n % 4 == 2 else
+               "At n = 0 mod 4 the usual cause is simply too few sweeps: the\n"
+               "  k=mode+1 cell holds about 0.15% of the mass.")
+        print(f"\n  CANNOT SOLVE for (mu, sigma): the cell(s) "
+              f"{', '.join(empty)} are empty.\n  The closed form needs all "
+              f"three consecutive cells occupied -- two cells\n  fix neither "
+              f"parameter. {why}\n  The ratios above stand; mu and sigma are "
+              f"not identified.")
 
     if args.validate:
         print("\n  VALIDATION against independent CFTP sampling")

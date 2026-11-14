@@ -38,6 +38,30 @@ import sixvertex.cftp_exact as ce
 from experiments.mixing import forward_coalescence_time, weights_for_delta
 
 
+def seed_block(n, delta, seeds):
+    """Disjoint seed range for one (n, Delta) cell of the grid.
+
+    Every cell used to run seeds 0..seeds-1, the same set everywhere. The
+    medians are unbiased either way, but it is the error run_shift.py
+    documents: "the same seeds producing the same islands, not two independent
+    agreements". Measured here, at n=16 between Delta=-1.0 and -1.25 with 80
+    seeds: Spearman rho 0.248 (p=0.026) on shared seeds against -0.140
+    (p=0.22) on disjoint ones -- a real correlation along the Delta axis,
+    where the lattice shape is identical so the random fields are literally
+    the same at every sweep. Across n at fixed Delta it was undetectable
+    (rho 0.14, p=0.29), the reshaping scrambling the shared stream.
+
+    So the published medians and the exponent alpha (fitted across n, whose
+    bootstrap resamples each n separately) stand; what was not earned was any
+    eyeballed agreement between ADJACENT Delta values.
+    """
+    # delta is SIGNED here via the +10 offset: abs(delta) would collide
+    # +0.5 with -0.5, which is how the first version of this still overlapped
+    # 8 of the 1540 default cell pairs.
+    base = 2_000_000 + int(round((delta + 10.0) * 1000)) * 10_000 + n * seeds
+    return range(base, base + seeds)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, nargs="+", default=[16, 24, 32, 40],
@@ -69,7 +93,7 @@ def main():
             for d in args.deltas:
                 w = weights_for_delta(d)
                 taus = []
-                for s in range(args.seeds):
+                for s in seed_block(n, d, args.seeds):
                     tau = forward_coalescence_time(n, w, seed=s,
                                                    max_sweeps=args.max_sweeps)
                     wr.writerow([n, d, w["c1"], s,

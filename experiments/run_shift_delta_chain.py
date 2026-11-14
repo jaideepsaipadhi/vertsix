@@ -35,7 +35,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import sixvertex.cftp_exact as ce
 from experiments.mixing import weights_for_delta
-from experiments.run_shift_chain import chain_observations, summarise
+from experiments.run_shift_chain import (cells_from_chains,
+                                         chain_observations, summarise)
 
 # thinning set from measured tau_int(k) at n=16
 THIN = {-1.5: 32, -2.0: 32, -2.5: 32, -3.0: 32, -4.0: 64, -5.0: 80,
@@ -68,14 +69,17 @@ def main():
         for d in args.deltas:
             thin = thin_for(d)
             w = weights_for_delta(d)
-            per = []
             # disjoint seed block per Delta
             base = 50_000 + int(abs(d) * 100) * 100
-            for c in range(args.chains):
-                ks = chain_observations(args.n, w, args.meas, thin,
-                                        seed=base + c, start_seed=base + 500 + c)
-                per.append((int((ks == -1).sum()), int((ks == 0).sum()),
-                            int((ks == 1).sum())))
+            chains = [chain_observations(args.n, w, args.meas, thin,
+                                         seed=base + c, start_seed=base + 500 + c)
+                      for c in range(args.chains)]
+            # The cells are mode-1, mode, mode+1 with the mode read off the
+            # data, not the literal -1, 0, +1: k's offset is set by n mod 4
+            # (integer at 0 mod 4, half-integer at 2 mod 4, quarter at odd n),
+            # so the hardcoded triple put every observation outside all three
+            # cells at, say, --n 18 and produced mu = sigma = nan in silence.
+            mode, per = cells_from_chains(chains)
             s = summarise(per)
             el = time.time() - t0
             wr.writerow([args.n, d, thin, args.chains, args.meas,

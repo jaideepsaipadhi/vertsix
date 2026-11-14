@@ -5,7 +5,9 @@
 
 WHY THIS AND NOT THE CROSSING PROBABILITY. experiments/island_exists.py asks
 whether a solid-c cluster spans the central N/5 window. That predicate is a
-clean yes/no and it is zero above Delta = -1, but its threshold is BIASED
+clean yes/no and it is at the per-cent level or below for Delta >= -1 (200
+samples at n=64: 0/200 at -0.75, 2/200 at -1.0 -- small but not zero, which an
+earlier version of island_exists.py claimed), but its threshold is BIASED
 DEEP, and necessarily so: near the transition the island occupies a vanishing
 fraction of the lattice, so it fails a span test against any fixed fraction
 of N while being genuinely present. Measured crossing probabilities put the
