@@ -175,7 +175,9 @@
             Exact sampling by CFTP needs c<sub>1</sub>c<sub>2</sub> &ge;
             a<sub>1</sub>a<sub>2</sub> and c<sub>1</sub>c<sub>2</sub> &ge;
             b<sub>1</sub>b<sub>2</sub>. Outside that region no monotone
-            coupling of the update exists, so no CFTP scheme is valid there.
+            coupling of the single-site update exists, so the monotone-CFTP argument
+            this sampler rests on does not apply there. (Non-monotone CFTP
+            schemes exist in the literature; none is implemented here.)
             Raise the c weights, or lower a and b, to re-enable it.
           </p>
         </div>
@@ -348,6 +350,6 @@
   });
 </script>
 <script src="sixvertex.js?v=2"></script>
-<script src="draw.js?v=66"></script>
+<script src="draw.js?v=67"></script>
 </body>
 </html>

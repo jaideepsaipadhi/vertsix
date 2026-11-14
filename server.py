@@ -175,9 +175,11 @@ def _run_exact_job(job_id, n, a1, a2, b1, b2, c1, c2, seed):
             # CFTP with the correct four-face rule is valid on the whole
             # region c1c2 >= a1a2 and c1c2 >= b1b2, not merely at the uniform
             # point. Outside that region no coupling of the single-site update
-            # is monotone (the marginals are not ordered), so there is no CFTP
-            # scheme to fall back on -- hence the refusal below rather than a
-            # slower method.
+            # is monotone (the marginals are not ordered), so the
+            # monotone-CFTP argument does not apply -- hence the refusal below
+            # rather than a slower method. Not "no CFTP scheme exists":
+            # non-monotone schemes (bounding chains, Fill's algorithm) are a
+            # real thing, just not implemented here.
             H, info = cftp_exact_sample(n, w, master_seed=seed,
                                         max_T=1 << 21, progress_cb=progress_cb)
         else:
@@ -645,8 +647,10 @@ def api_domain_start():
         return jsonify({"ok": False, "error":
                         f"CFTP needs c1c2 >= a1a2 and c1c2 >= b1b2 "
                         f"(here A={A:.4g}, B={B:.4g}, C={C:.4g}); outside that "
-                        f"region no monotone coupling of the update exists, so "
-                        f"there is no exact method to fall back on."}), 400
+                        f"region no monotone coupling of the single-site "
+                        f"update exists, and the sequential sampler is "
+                        f"DWBC-only, so this server has no exact method for a "
+                        f"general domain there."}), 400
 
     job_id = uuid.uuid4().hex
     with _jobs_lock:

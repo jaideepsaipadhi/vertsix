@@ -7575,3 +7575,95 @@ def test_the_fluctuation_field_is_a_difference_of_independent_samples():
     assert abs(bias) < 0.15, (
         f"the difference field has mean {bias:+.4f}; a difference of two "
         f"samples from the same law must be unbiased")
+
+
+def test_off_region_violations_are_failures_of_stochastic_monotonicity():
+    """Why "no monotone coupling exists" is a theorem and not a guess.
+
+    README.md states the argument: "a monotone coupling forces the two chains'
+    flip-up marginals to be ordered and they are not." That is the step which
+    upgrades "THIS coupling breaks" into "no coupling can work", and nothing
+    verified it -- monotone_check only reported that order was violated, not
+    why.
+
+    The mechanism: for A <= B, the shared-uniform coupling preserves order at
+    a site for every u exactly when p(A) <= p(B), where p is the flip-up
+    probability given the neighbourhood. So a violation means p(A) > p(B) for
+    some ordered pair -- the conditional is not stochastically monotone in the
+    configuration. That is a property of the MEASURE, not of the coupling, and
+    no choice of coupling can repair it, because any monotone coupling would
+    order the marginals it couples.
+
+    Measured just outside the C >= A wall (a = 1.05, b = c = 1) on the square
+    n=4: 333 ordered pairs have an order-violating site, and in all 333 the
+    flip-up probability decreased.
+
+    HOW MUCH OF THAT IS A MEASUREMENT, honestly. The 333-of-333 is a logical
+    identity given the shape of this coupling, not an empirical discovery.
+    With A <= B we have va <= vb, and the update sends each chain up or down
+    by one, so na > nb needs: both up, va > vb (impossible); both down, same
+    (impossible); A down and B up, va > vb + 2 (impossible); or A UP and B
+    DOWN, which needs pb <= u < pa, i.e. pa > pb. There is no fourth case. So
+    the equality cannot fail while the coupling is the threshold form.
+
+    What the test therefore establishes is narrower than the number suggests:
+    that the detector really is that threshold form (a coupling of another
+    shape could break the identity and would be caught), and that violations
+    exist off-region at all -- the guard below fails if there are none, which
+    is what happened when this was pointed at weights INSIDE the region. The
+    argument for "no monotone coupling exists" rests on the case analysis
+    above, which is recorded here because it was previously only asserted in
+    README.md with nothing working it through.
+
+    This is also what bounds the claim: it establishes that MONOTONE CFTP is
+    unavailable there, not that no CFTP scheme exists. index.html said the
+    latter and now says the former.
+    """
+    import numpy as np
+
+    from sixvertex.domains import (_weight_table, corner_mask, domain_mask,
+                                   sweep_plan)
+    from experiments.brute_domain import enumerate_heights
+    from experiments.monotone_check import _p_up
+
+    m = domain_mask([0, 4], [0, 4], [[1]])
+    w = dict(a1=1.05, a2=1.05, b1=1.0, b2=1.0, c1=1.0, c2=1.0)
+    tbl = _weight_table(w)
+    hs = enumerate_heights(m)
+    cm = corner_mask(m)
+    sites = [s for g in sweep_plan(m) for s in g]
+
+    violations = 0
+    with_decrease = 0
+    for A in hs:
+        for B in hs:
+            if np.array_equal(A, B) or not np.all(B[cm] >= A[cm]):
+                continue
+            for flat, nb, faces in sites:
+                a = A.ravel().tolist()
+                b = B.ravel().tolist()
+                pa, va = _p_up(a, flat, nb, faces, tbl)
+                pb, vb = _p_up(b, flat, nb, faces, tbl)
+                if pa is None or pb is None:
+                    continue
+                bad = False
+                for c in sorted({0.0, 1.0, pa, pb}):
+                    for u in (max(0.0, c - 1e-9), c, min(1.0, c + 1e-9)):
+                        na = va + 1 if u < pa else va - 1
+                        nbv = vb + 1 if u < pb else vb - 1
+                        if na > nbv:
+                            bad = True
+                if bad:
+                    violations += 1
+                    if pa > pb:
+                        with_decrease += 1
+
+    assert violations > 100, (
+        f"only {violations} order-violating pairs just outside the region; "
+        f"this test needs the violations to exist to say anything about them")
+    assert with_decrease == violations, (
+        f"{violations - with_decrease} of {violations} violations happen "
+        f"WITHOUT the flip-up probability decreasing. The README's argument "
+        f"for 'no monotone coupling exists' is that the marginals are not "
+        f"ordered; a violation of another kind would mean that argument does "
+        f"not cover every case")
