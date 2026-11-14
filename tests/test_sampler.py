@@ -5977,3 +5977,85 @@ def test_the_theta_floor_reaches_further_than_delta_minus_one():
     assert "meaningful range starts around" in doc, (
         "plot_island_order.py no longer records where the exponent becomes "
         "trustworthy")
+
+
+def test_the_numba_toggle_reaches_the_coalescence_measurement():
+    """validate.py's compiled-vs-numpy check must not compare a path to itself.
+
+    It works by setting ``cftp_exact._HAS_NUMBA = False`` and calling
+    ``forward_coalescence_time`` again. experiments/mixing.py used to do
+    ``from sixvertex.cftp_exact import _HAS_NUMBA``, which binds the value at
+    import time: the toggle never reached the function, both runs took the
+    compiled path, and a deliberately sabotaged ``_sweep`` passed the check.
+    Pinned here on the behaviour -- the toggle changes which code runs -- not
+    on how mixing.py spells the import.
+    """
+    import pytest
+
+    import sixvertex.cftp_exact as ce
+    import experiments.mixing as mixing
+
+    if not ce._HAS_NUMBA:
+        pytest.skip("numba is not installed; there is no second path to compare")
+
+    w = mixing.weights_for_delta(-2.0)
+    calls = {"numpy": 0}
+    real_sweep = mixing._sweep
+
+    def counting_sweep(*a, **k):
+        calls["numpy"] += 1
+        return real_sweep(*a, **k)
+
+    saved = ce._HAS_NUMBA
+    try:
+        mixing._sweep = counting_sweep
+        ce._HAS_NUMBA = True
+        compiled = mixing.forward_coalescence_time(10, w, seed=3)
+        took_numpy_while_compiled = calls["numpy"]
+        ce._HAS_NUMBA = False
+        pure = mixing.forward_coalescence_time(10, w, seed=3)
+        took_numpy_after_toggle = calls["numpy"] - took_numpy_while_compiled
+    finally:
+        mixing._sweep = real_sweep
+        ce._HAS_NUMBA = saved
+
+    assert took_numpy_while_compiled == 0, (
+        "the compiled path is not being taken when _HAS_NUMBA is True")
+    assert took_numpy_after_toggle > 0, (
+        "setting cftp_exact._HAS_NUMBA = False did not reach "
+        "forward_coalescence_time -- the flag is bound at import time again, "
+        "which makes validate.py's compiled-vs-numpy check vacuous")
+    assert compiled == pure, (
+        f"the two sweep implementations disagree on the same randomness: "
+        f"{compiled} vs {pure}")
+
+
+def test_the_island_lattice_claim_is_qualified_by_n_mod_four():
+    """k = (G - n/2)/2 is integer valued only at n = 0 mod 4.
+
+    The spacing is 1 at every n, but the offset moves with n mod 4. Two
+    documents claimed k "comes out an integer" flatly, and validate.py checked
+    integrality at n=32 alone -- passing while asserting something false of
+    every other size.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    for rel in ("experiments/island.py", "experiments/validate.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "n mod 4" in text or "n % 4" in text, (
+            f"{rel} no longer records that k's offset depends on n mod 4")
+    # and the fact itself, not just the wording: at n = 2 mod 4 the centred
+    # height is a half-integer, so "k is an integer" is false there.
+    from sixvertex.cftp_exact import cftp_sample
+    from experiments.island import island
+    from experiments.mixing import weights_for_delta
+
+    w = weights_for_delta(-3.0)
+    ks = [island(cftp_sample(34, w, master_seed=880000 + s)[0], 34)["k"]
+          for s in range(4)]
+    ks = [k for k in ks if k is not None]
+    assert ks, "no island found at n=34; the check below proves nothing"
+    assert all(abs(k - round(k)) > 0.1 for k in ks), (
+        f"k came out integer valued at n=34 (n%4=2): {sorted(set(ks))} -- "
+        f"either the centring changed or this test is now vacuous")

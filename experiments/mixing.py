@@ -25,13 +25,21 @@ from __future__ import annotations
 
 import numpy as np
 
+import sixvertex.cftp_exact as _ce
 from sixvertex.cftp_exact import (
     _colour_indices, _rand_field, _sweep, _weight_table, extremal_height,
-    in_monotone_region, _HAS_NUMBA,
+    in_monotone_region,
 )
 
-if _HAS_NUMBA:
+if _ce._HAS_NUMBA:
     from sixvertex.cftp_exact import _sweep_compiled
+
+# The numba flag is read through the module (_ce._HAS_NUMBA), never copied into
+# a name here. validate.py's compiled-vs-numpy cross-check works by setting
+# cftp_exact._HAS_NUMBA = False and calling back in; a `from ... import
+# _HAS_NUMBA` binds the value at import time, so the toggle would not reach
+# this function and the check would compare the compiled path against itself.
+# It did, until this was fixed: a deliberately sabotaged _sweep passed it.
 
 
 def forward_coalescence_time(n, weights, seed, max_sweeps=1 << 22,
@@ -51,11 +59,11 @@ def forward_coalescence_time(n, weights, seed, max_sweeps=1 << 22,
     colour_idx, size = _colour_indices(n)
     lo = extremal_height(n, "lo")
     hi = extremal_height(n, "hi")
-    idx_tuple = tuple(colour_idx) if _HAS_NUMBA else None
+    idx_tuple = tuple(colour_idx) if _ce._HAS_NUMBA else None
 
     for t in range(1, max_sweeps + 1):
         rnd = _rand_field(seed, t, lo.shape)
-        if _HAS_NUMBA:
+        if _ce._HAS_NUMBA:
             _sweep_compiled(lo.ravel(), tbl, rnd.ravel(), idx_tuple, size)
             _sweep_compiled(hi.ravel(), tbl, rnd.ravel(), idx_tuple, size)
         else:

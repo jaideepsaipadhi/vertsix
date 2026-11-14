@@ -12,7 +12,13 @@ What the data says, measured on exact CFTP samples:
   perfect checkerboard. So the right object is the **parity-corrected height**
   G = H - ((i+j) mod 2), which is genuinely constant on the island. Levels of
   neighbouring plateaus differ by 2, not 1, so the natural lattice variable is
-  k = (G - n/2) / 2, which comes out an integer.
+  k = (G - n/2) / 2. Its OFFSET depends on n mod 4, because n/2 is subtracted
+  from a level that moves in steps of 2: k is integer valued at n = 0 mod 4,
+  half-integer at n = 2 mod 4, and quarter-integer at odd n (measured at
+  Delta=-3: n=32 gives k in {-1, 0}, n=34 gives {-0.5, +0.5}, n=33 gives
+  {-0.25}). Only the spacing, 1, is common to all of them. Any check that k
+  "comes out an integer" is a check on n mod 4, not on the lattice constant --
+  see the sublattice check in experiments/validate.py.
 
 * Connectivity matters more than it looks. Defining the island as the largest
   4-connected component of c-faces gives a median separation from the runner-up

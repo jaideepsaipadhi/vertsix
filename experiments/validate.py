@@ -182,11 +182,26 @@ def validate_island():
           f"{agree}/{N} agree; mean purity {np.mean([r['purity'] for r in rows]):.1%} "
           f"(~50% is the expected geometry, not an error)")
 
-    # (c) k must land on the integers, or the lattice constant is wrong
-    ks = [r["k"] for r in rows if r["k"] is not None]
-    check("the centred height k is integer valued",
-          all(abs(k - round(k)) < 1e-9 for k in ks),
-          f"values {sorted(set(ks))}")
+    # (c) k must land on a lattice of spacing 1, or the lattice constant is
+    #     wrong. It is NOT integer valued in general: k = (G - n/2)/2 with G
+    #     moving in steps of 2, so the offset is set by n mod 4 -- integer at
+    #     0 mod 4, half-integer at 2 mod 4, quarter-integer at odd n. Checking
+    #     integrality at n=32 alone would pass while asserting something false,
+    #     so the check is the spacing, run at all three residues.
+    #     The offset itself is left unpinned: it takes four values, one per
+    #     residue, and fixing them from a dozen samples each would be fitting
+    #     the sample rather than checking the lattice. Spacing 1 is the claim.
+    ok, detail = True, []
+    for n_ in (32, 34, 33, 35):
+        kk = [island(cftp_sample(n_, w, master_seed=880000 + s)[0], n_)["k"]
+              for s in range(16)]
+        kk = [x for x in kk if x is not None]
+        base = min(kk)
+        if not all(abs((k - base) - round(k - base)) < 1e-9 for k in kk):
+            ok = False
+        detail.append(f"n={n_} (n%4={n_ % 4}): {sorted(set(kk))}")
+    check("the centred height k sits on a spacing-1 lattice at every n mod 4",
+          ok, "; ".join(detail))
 
     # (d) a discrete Gaussian has variance bounded in n -- if ours grows, the
     #     observable is wrong
