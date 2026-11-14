@@ -8631,3 +8631,80 @@ def test_the_stochastic_delta_is_the_general_delta_at_its_own_weights():
     assert equalities == [(x, x) for x in grid], (
         f"Delta = 1 must hold exactly on b1 = b2 and nowhere else; got "
         f"{equalities}")
+
+
+def test_the_wire_names_c_up_and_c_down_land_on_the_faces_they_name():
+    """c_up and c_down are the HTTP field names -- draw.js sends them, README
+    and PACKAGE.md document them -- and the package's own vocabulary is c1 and
+    c2. So there is a translation between the two, and it happens in four
+    places: SixVertexSampler.__init__ (self.c1 = float(c_up)), server.py's
+    request parser ("c1": num("c_up")), and two call sites that pass c_up=c1.
+    That is a seventh label translation in a project whose worst bug was a
+    label table right in five places and wrong in a sixth.
+
+    No test touched it. Every test that passes c_up at all passes c_up=c1 and
+    c_down=c2 and then measures the MEASURE -- and the measure cannot see this
+    mistake. Under DWBC every configuration has #c1 - #c2 = n with the counts
+    otherwise locked, so exchanging c1 and c2 leaves the distribution
+    identical; it was measured at TV 0.00000 elsewhere in this suite. Delta
+    cannot see it either, depending on c1*c2. A swap here would be invisible
+    to sampling and visible only in what the interface SAYS a face weighs --
+    which is exactly the class of error that was flagged in the first place.
+
+    So this pins the chain directly, with six distinct weights so that no pair
+    can alias and no slip can give the same number twice:
+
+        c_up=5 -> self.c1 -> the (l,t) face      c_down=7 -> self.c2 -> (b,r)
+        a1=2 -> the empty face                   a2=3 -> the full face
+        b1=11 -> the HORIZONTAL through-face      b2=13 -> the vertical one
+
+    The classifier is the shipped _classify_face_np, called on one face of
+    each of the six types. _classify_face_torch cannot be executed here --
+    torch is an optional accelerator and is not installed -- and is covered
+    instead by the label-table census test, which reads the mapping out of
+    both branches and requires them to agree.
+    """
+    from sixvertex.sampler import SixVertexSampler
+
+    c_up, c_down = 5.0, 7.0
+    s = SixVertexSampler(n=4, c_up=c_up, c_down=c_down,
+                         a1=2.0, a2=3.0, b1=11.0, b2=13.0)
+
+    assert (s.c1, s.c2) == (c_up, c_down), (
+        f"the constructor maps c_up/c_down to (c1, c2) = ({s.c1}, {s.c2}); "
+        f"c_up must become c1")
+
+    # corner heights (tl, tr, bl, br) giving one face of each type, with the
+    # bits (l, t, b, r) that name it
+    faces = {
+        "a1 (0000, empty)":      ((0, -1, -1, -2), 2.0),
+        "a2 (1111, full)":       ((0, 1, 1, 2), 3.0),
+        "c1 (1100, l+t)":        ((0, 1, 1, 0), c_up),
+        "c2 (0011, b+r)":        ((0, -1, -1, 0), c_down),
+        "b1 (1001, horizontal)": ((0, -1, 1, 0), 11.0),
+        "b2 (0110, vertical)":   ((0, 1, -1, 0), 13.0),
+    }
+    seen = {}
+    for name, ((tl, tr, bl, br), want) in faces.items():
+        cell = lambda v: np.array([[float(v)]], dtype=np.float64)   # noqa: E731
+        got = float(s._classify_face_np(cell(tl), cell(tr), cell(bl), cell(br))[0, 0])
+        assert got == want, f"{name} weighs {got}, expected {want}"
+        seen[name] = got
+
+    # six distinct weights must come back as six distinct values, or two face
+    # types are sharing one slot and the per-face assertions above could both
+    # be satisfied by the same attribute
+    assert len(set(seen.values())) == 6, seen
+    assert set(seen.values()) == {2.0, 3.0, 5.0, 7.0, 11.0, 13.0}, seen
+
+    # the server half of the same translation. /api/init echoes no weights,
+    # so there is nothing to read off a response; _parse_request is where the
+    # wire names become the package's, and it is directly callable.
+    import server as _server
+    n_, w_, _seed = _server._parse_request(
+        {"n": 8, "a1": 2.0, "a2": 3.0, "b1": 11.0, "b2": 13.0,
+         "c_up": c_up, "c_down": c_down})
+    assert n_ == 8
+    assert w_ == dict(a1=2.0, a2=3.0, b1=11.0, b2=13.0, c1=c_up, c2=c_down), (
+        f"server._parse_request translated the wire names to {w_}; c_up must "
+        f"become c1 and c_down c2, matching the constructor")
