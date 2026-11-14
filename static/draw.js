@@ -869,6 +869,11 @@
         : "convention: neighbouring values differ by +1 or -1 (DWBC)");
       lines.push("note: the two models use DIFFERENT height conventions; " +
                  "the face rule for one does not apply to the other");
+      if (isDomain()) {
+        lines.push("blank = lattice corner outside the domain (not a height); " +
+                   "numpy.loadtxt will not read a table with blanks -- use " +
+                   "genfromtxt, which gives nan there");
+      }
     } else {
       lines.push(`layout: ${n} x ${n} codes, row i from the TOP of the ` +
                  "picture, tab separated");
@@ -880,12 +885,36 @@
     return lines.map(l => `# ${l}`).join("\n") + "\n";
   }
 
+  // Whether lattice CORNER (i,j) belongs to the model. inDomain is defined on
+  // faces, and a corner belongs iff at least one of the up-to-four faces
+  // around it does -- the same rule as domains.corner_mask on the server.
+  function cornerInDomain(frame, i, j) {
+    if (!frame.inDomain) return true;
+    const n = frame.n;
+    for (const [a, b] of [[i - 1, j - 1], [i - 1, j], [i, j - 1], [i, j]]) {
+      if (a >= 0 && a < n && b >= 0 && b < n && frame.inDomain(a, b)) return true;
+    }
+    return false;
+  }
+
   function heightsAsText(frame) {
-    // (N+1)x(N+1) integer table, tab separated -- loads with numpy.loadtxt
+    // (N+1)x(N+1) integer table, tab separated -- loads with numpy.loadtxt.
+    //
+    // Corners outside the domain are written BLANK, as typesAsText already
+    // does for faces. They used to be written as plain numbers: the server
+    // leaves 0 there, which on a general domain is inside the real height
+    // range (0 to 6 on the staircase), so 12 of the 49 entries -- 24% of the
+    // table -- were indistinguishable from measurements and nothing in the
+    // header said so. The type export in this same file has always marked
+    // them and documented the marker; this is that file's own convention
+    // applied where it was missing, and exactly the per-call-site divergence
+    // the faceBits comment above warns about.
     const n = frame.n, rows = [];
     for (let i = 0; i <= n; i++) {
       const row = [];
-      for (let j = 0; j <= n; j++) row.push(frame.get(i, j));
+      for (let j = 0; j <= n; j++) {
+        row.push(cornerInDomain(frame, i, j) ? frame.get(i, j) : "");
+      }
       rows.push(row.join("\t"));
     }
     return exportHeader(frame, "height function") + rows.join("\n") + "\n";

@@ -3845,22 +3845,78 @@ def test_drawn_paths_have_no_dangling_vertical_segments():
 
 
 def test_path_view_reads_the_arrows_with_the_row_flip():
-    """Pins the flip in the source, so the mapping cannot drift back.
+    """The shipped faceBits is RUN, not pattern-matched.
 
-    The Python test above replicates draw.js; this checks the replication is
-    still faithful. Without `n - 1 - i` the vertical direction inverts again
-    and the paths come apart.
+    This used to assert that the string "arrowFrame.n - 1 - i" appeared in the
+    source, with a Python replica checked separately. That is the arrangement
+    a mutation walked straight through elsewhere in this file: a port verified
+    against the server proves nothing about the browser once the two drift.
+
+    So the property itself is checked, in node, on the shipped function: two
+    vertically adjacent cells must agree on the edge they share, which is
+    exactly what broke when the row flip was missing ("19% of vertical
+    segments did not meet"). Measured here at n=12, b1=0.3, b2=0.7, seed 5:
+
+        shipped                0 of 132 shared edges disagree
+        flip removed (m = i)  22 of 132   (17%)
+        t and b exchanged     22 of 132   (17%)
+
+    so the test has teeth against both ways of getting it wrong, and the
+    historical 19% is reproduced.
     """
-    import re
+    import json
+    import pathlib
+    import shutil
+    import subprocess
+    import tempfile
 
-    src = open("static/draw.js").read()
-    body = src[src.index("function faceBits"):]
-    body = body[:body.index("const tl =")]
-    assert "arrowFrame.n - 1 - i" in body, \
-        "the screen-row to math-row flip is gone from faceBits"
-    # t must read the edge ABOVE the math row, b the one below it.
-    assert re.search(r"t:\s*arrowFrame\.v\(m \+ 1, j\)", body), body[-400:]
-    assert re.search(r"b:\s*arrowFrame\.v\(m, j\)", body), body[-400:]
+    import pytest
+
+    from sixvertex.stochastic import sample as stoch_sample
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available, so the shipped faceBits is "
+                    "unverified here")
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "static" / "draw.js").read_text(encoding="utf-8")
+
+    def grab(name):
+        i = src.index("function " + name)
+        return src[i:src.index("\n  }", i) + 4]
+
+    assert "arrowFrame.n - 1 - i" in grab("faceBits"), (
+        "the screen-row to math-row flip is gone from faceBits")
+
+    n = 12
+    h, v = stoch_sample(n, 0.3, 0.7, seed=5)
+    harness = (
+        "let arrowFrame = null;\n" + grab("faceInDomain") + "\n"
+        + grab("faceBits") + "\n"
+        + f"const n = {n};\n"
+        + "const H = " + json.dumps(h.tolist()) + ";\n"
+        + "const V = " + json.dumps(v.tolist()) + ";\n"
+        + "arrowFrame = {n: n, h: (m,j) => H[m][j], v: (m,j) => V[m][j]};\n"
+        + "const frame = {n: n, inDomain: () => true, get: () => 0};\n"
+        + "let mismatch = 0, total = 0;\n"
+        + "for (let i = 0; i + 1 < n; i++) for (let j = 0; j < n; j++) {\n"
+        + "  const a = faceBits(frame, i, j), b = faceBits(frame, i + 1, j);\n"
+        + "  total++; if (a.b !== b.t) mismatch++;\n"
+        + "}\n"
+        + "console.log(JSON.stringify({mismatch: mismatch, total: total}));\n")
+    with tempfile.TemporaryDirectory() as d:
+        f = pathlib.Path(d) / "facebits.js"
+        f.write_text(harness, encoding="utf-8")
+        out = subprocess.run([node, str(f)], capture_output=True, text=True,
+                             timeout=120)
+    assert out.returncode == 0, out.stderr[:400]
+    res = json.loads(out.stdout.strip().splitlines()[-1])
+    assert res["total"] == (n - 1) * n, res
+    assert res["mismatch"] == 0, (
+        f"{res['mismatch']} of {res['total']} vertically adjacent cells "
+        f"disagree on the edge they share, so the drawn paths come apart -- "
+        f"the row flip or the t/b assignment in faceBits is wrong again")
 
 
 def test_stochastic_height_and_arrows_are_sent_in_the_same_orientation():
@@ -7093,16 +7149,61 @@ def test_the_equilibration_badge_uses_the_only_observable_that_can_see_burn_in()
     assert gap_b > tol, (gap_b, tol)        # b correctly says it is not
     assert gap_b > 10 * gap_c, (gap_b, gap_c)
 
-    # (c) the browser computes the b patterns and no longer says "c-vertex"
+    # (c) the badge no longer calls it a c-vertex density
     js = (pathlib.Path(__file__).resolve().parent.parent / "static"
           / "draw.js").read_text(encoding="utf-8")
     assert "function bFraction" in js, "the renamed function is gone"
     assert "in c-vertex density" not in js, (
         "the badge calls the through-vertex density a c-vertex density again")
-    body = js.split("function bFraction", 1)[1].split("function ", 1)[0]
-    assert "t===1 && bo===1" in body and "bo===0 && r===1" in body, (
-        "bFraction no longer selects the through-vertex patterns; if it was "
-        "changed to count c-vertices, read this test's docstring")
+
+    # (d) and the SHIPPED bFraction returns the b-density, run in node against
+    #     the Python. A text check on the bit patterns would pass a rewritten
+    #     function; executing it is the only way to know what the browser
+    #     computes.
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available, so the shipped bFraction is "
+                    "unverified; only the badge's wording was checked")
+
+    start = js.index("function bFraction")
+    body = js[start:js.index("\n  }", start) + 4]
+
+    from sixvertex.cftp_exact import cftp_sample
+
+    samples = []
+    for sd in range(3):
+        H, _i = cftp_sample(16, w, master_seed=9100 + sd)
+        H = np.asarray(H, dtype=np.int64)
+        samples.append({"n": 16, "H": H.ravel().tolist(),
+                        "b": density(H, 16, "b"),
+                        "c": density(H, 16, "c")})
+    harness = (
+        body
+        + "\nconst cases = " + json.dumps(samples) + ";\n"
+        + "console.log(JSON.stringify(cases.map(c => "
+          "bFraction({n: c.n, H: c.H}))));\n")
+    with tempfile.TemporaryDirectory() as d:
+        f = pathlib.Path(d) / "bfrac.js"
+        f.write_text(harness, encoding="utf-8")
+        out = subprocess.run([node, str(f)], capture_output=True, text=True,
+                             timeout=120)
+    assert out.returncode == 0, out.stderr[:400]
+    got = json.loads(out.stdout.strip().splitlines()[-1])
+    for g, case in zip(got, samples):
+        assert abs(g - case["b"]) < 1e-12, (
+            f"the shipped bFraction returns {g}, not the b-density "
+            f"{case['b']}")
+        assert abs(g - case["c"]) > 0.05, (
+            f"the shipped bFraction returns {g}, which matches the c-density "
+            f"{case['c']} -- if it was changed to count c-vertices, read this "
+            f"test's docstring: the badge then cannot see burn-in at all")
 
 
 def test_the_island_separation_figures_are_the_measured_ones():
@@ -7149,3 +7250,129 @@ def test_the_island_separation_figures_are_the_measured_ones():
     assert seps[8].min() >= 2.0, (
         f"the least-separated of {reps} samples is {seps[8].min():.1f}x, so "
         f"the island is no longer unambiguous in every sample")
+
+
+def test_the_height_export_marks_corners_outside_the_domain():
+    """draw.js exported out-of-domain corners as if they were heights.
+
+    typesAsText has always written "" for a face outside the domain and the
+    export header has always documented the marker. heightsAsText wrote every
+    corner of the (n+1)x(n+1) table as a plain number. The server leaves 0 at
+    those corners, and 0 is INSIDE the real height range on a general domain
+    (0 to 6 on the staircase), so the values were indistinguishable from
+    measurements: 12 of 49 entries, 24% of the table, with nothing in the
+    header to say which.
+
+    Two things are pinned: that the rule for "corner inside the domain"
+    matches the server's corner_mask exactly, and that the browser applies it.
+    """
+    import itertools
+    import pathlib
+
+    import numpy as np
+
+    from sixvertex.domains import (DomainError, cftp_sample, corner_mask,
+                                   domain_mask)
+
+    # (a) the rule the browser uses, ported, against the server's own mask
+    def corner_in_domain(mask, i, j):
+        n = mask.shape[0]
+        for a, b in ((i - 1, j - 1), (i - 1, j), (i, j - 1), (i, j)):
+            if 0 <= a < n and 0 <= b < n and mask[a, b]:
+                return True
+        return False
+
+    cases = []
+    for bits in itertools.product([0, 1], repeat=9):
+        I = np.array(bits).reshape(3, 3)
+        if I.sum() == 0:
+            continue
+        for cuts in ([0, 1, 2, 3], [0, 1, 2, 4], [0, 2, 4, 6]):
+            try:
+                m = domain_mask(cuts, cuts, I)
+            except DomainError:
+                continue
+            cases.append((cuts, I.tolist(), m))
+    assert len(cases) > 250, len(cases)
+
+    # the ported rule, as a first check
+    for cuts, I, m in cases:
+        cm = corner_mask(m)
+        for i in range(m.shape[0] + 1):
+            for j in range(m.shape[0] + 1):
+                assert corner_in_domain(m, i, j) == bool(cm[i, j]), (
+                    f"the ported corner rule disagrees with corner_mask at "
+                    f"{(i, j)} on cuts={cuts}, I={I}")
+
+    # and then the SHIPPED function, run in node. A port verified against the
+    # server proves nothing about the browser if the two drift apart -- a
+    # mutation that broke the rule in draw.js alone passed the ported check.
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available, so the shipped corner rule is "
+                    "unverified here; only the ported copy was checked")
+
+    js_src = (pathlib.Path(__file__).resolve().parent.parent / "static"
+              / "draw.js").read_text(encoding="utf-8")
+    start = js_src.index("function cornerInDomain")
+    body = js_src[start:js_src.index("\n  }", start) + 4]
+
+    payload = [{"n": int(m.shape[0]),
+                "mask": m.astype(int).tolist(),
+                "want": corner_mask(m).astype(int).tolist()}
+               for _cuts, _I, m in cases]
+    harness = (
+        body
+        + "\nconst cases = " + json.dumps(payload) + ";\n"
+        + "let bad = 0;\n"
+        + "for (const c of cases) {\n"
+        + "  const frame = {n: c.n, inDomain: (i, j) => c.mask[i][j] === 1};\n"
+        + "  for (let i = 0; i <= c.n; i++)\n"
+        + "    for (let j = 0; j <= c.n; j++)\n"
+        + "      if ((cornerInDomain(frame, i, j) ? 1 : 0) !== c.want[i][j]) bad++;\n"
+        + "}\n"
+        + "console.log(JSON.stringify({bad: bad, cases: cases.length}));\n")
+    with tempfile.TemporaryDirectory() as d:
+        f = pathlib.Path(d) / "corner.js"
+        f.write_text(harness, encoding="utf-8")
+        out = subprocess.run([node, str(f)], capture_output=True, text=True,
+                             timeout=120)
+    assert out.returncode == 0, out.stderr[:400]
+    res = json.loads(out.stdout.strip().splitlines()[-1])
+    assert res["cases"] == len(cases)
+    assert res["bad"] == 0, (
+        f"the SHIPPED cornerInDomain in draw.js disagrees with the server's "
+        f"corner_mask at {res['bad']} corners")
+
+    # (b) the values at those corners really are in range, so a reader could
+    #     not have spotted them -- which is why the marker is needed
+    m = domain_mask([0, 2, 4, 6], [0, 2, 4, 6],
+                    [[1, 1, 1], [0, 1, 1], [0, 0, 1]])
+    H, _info = cftp_sample(m, dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0,
+                                   c1=1.6, c2=1.6), master_seed=3)
+    H = np.asarray(H, dtype=np.int16)
+    cm = corner_mask(m)
+    inside_lo, inside_hi = int(H[cm].min()), int(H[cm].max())
+    outside = set(H[~cm].tolist())
+    assert outside, "this domain no longer has corners outside it"
+    assert all(inside_lo <= v <= inside_hi for v in outside), (
+        f"out-of-domain corners {sorted(outside)} now fall outside the real "
+        f"height range [{inside_lo}, {inside_hi}], so they would be visible "
+        f"as nonsense; re-read this test")
+
+    # (c) and the browser blanks them, with the header saying so
+    js = (pathlib.Path(__file__).resolve().parent.parent / "static"
+          / "draw.js").read_text(encoding="utf-8")
+    assert "function cornerInDomain" in js
+    body = js.split("function heightsAsText", 1)[1].split("\n  }", 1)[0]
+    assert "cornerInDomain(frame, i, j)" in body, (
+        "heightsAsText no longer checks whether a corner is in the domain")
+    assert "blank = lattice corner outside the domain" in js, (
+        "the export header no longer documents the blank marker")
