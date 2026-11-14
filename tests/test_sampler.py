@@ -8516,3 +8516,67 @@ def test_the_package_parses_at_the_python_floor_its_metadata_promises():
                     hits.append(f"{path.relative_to(root)}:{lineno} {pat}")
     assert not hits, (
         f"newer than the promised Python {floor[0]}.{floor[1]} floor: " + "; ".join(hits))
+
+
+def test_the_stochastic_delta_is_the_general_delta_at_its_own_weights():
+    """stochastic.delta is a bare one-liner with no docstring and no
+    derivation, in a package where everything else is annotated to death, and
+    nothing connected it to the Delta the rest of the code uses. It is right,
+    and this records why.
+
+    The stochastic six-vertex model's parameters b1, b2 in (0,1) are
+    conditional probabilities, not Boltzmann weights. The equivalent
+    Boltzmann weights are
+
+        a1 = a2 = 1,    b1 = b1,    b2 = b2,    c1 = 1 - b1,    c2 = 1 - b2
+
+    -- stochasticity is exactly the statement that each input pair's two
+    outcomes sum to one. Substituting into the general Delta,
+
+        Delta = (a1a2 + b1b2 - c1c2) / (2 sqrt(a1a2 b1b2))
+              = (1 + b1b2 - (1-b1)(1-b2)) / (2 sqrt(b1b2))
+              = (b1 + b2) / (2 sqrt(b1 b2))
+
+    which is the one-liner. Checked here over a grid rather than asserted:
+    the two agree to 2e-15, so a drift in EITHER formula is caught by the
+    other.
+
+    Two consequences follow, and both are claims the interface already makes
+    in prose while nothing checked them:
+
+      * Delta >= 1 always, by AM-GM, with equality exactly at b1 = b2. So the
+        stochastic model lives entirely in the ferroelectric regime and can
+        never be antiferroelectric -- there is no island in it, and a regime
+        badge that reported one would be reporting a phase the model cannot
+        reach. static/index.html states the AM-GM bound; this is the check.
+      * its weights are never inside the monotone region, and cannot be:
+        c1c2 >= a1a2 reads (1-b1)(1-b2) >= 1, which is impossible for b in
+        (0,1). So CFTP is not merely untried on this model but inapplicable
+        to it, which is the reason it has a sequential sampler of its own
+        rather than sharing the CFTP path.
+    """
+    import sixvertex as sv
+    from sixvertex.stochastic import delta as sdelta
+
+    grid = [0.01, 0.05, 0.1, 0.25, 1.0 / 3.0, 0.5, 0.7, 0.9, 0.95, 0.99]
+    worst = 0.0
+    equalities = []
+    for b1 in grid:
+        for b2 in grid:
+            w = dict(a1=1.0, a2=1.0, b1=b1, b2=b2, c1=1.0 - b1, c2=1.0 - b2)
+            mine, general = float(sdelta(b1, b2)), sv.delta(w)
+            worst = max(worst, abs(mine - general))
+
+            assert mine >= 1.0 - 1e-12, (
+                f"b1={b1}, b2={b2}: Delta = {mine!r} is below 1, which AM-GM "
+                f"forbids and static/index.html rules out")
+            if abs(mine - 1.0) < 1e-12:
+                equalities.append((b1, b2))
+            assert not sv.in_monotone_region(w), (
+                f"b1={b1}, b2={b2}: stochastic weights reported inside the "
+                f"monotone region, where (1-b1)(1-b2) >= 1 is impossible")
+
+    assert worst < 1e-13, f"stochastic.delta and sixvertex.delta differ by {worst}"
+    assert equalities == [(x, x) for x in grid], (
+        f"Delta = 1 must hold exactly on b1 = b2 and nowhere else; got "
+        f"{equalities}")

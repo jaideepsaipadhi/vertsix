@@ -106,4 +106,24 @@ def height_function(h, v):
 
 
 def delta(b1, b2):
+    """Anisotropy parameter, in the stochastic model's own parameters.
+
+    b1 and b2 are conditional probabilities, not Boltzmann weights. The
+    equivalent weights are a1 = a2 = 1, b1 = b1, b2 = b2, c1 = 1 - b1,
+    c2 = 1 - b2 -- stochasticity being exactly the statement that each input
+    pair's two outcomes sum to one. Substituting into the general Delta of
+    sixvertex.delta collapses it:
+
+        (1 + b1b2 - (1-b1)(1-b2)) / (2 sqrt(b1b2)) = (b1+b2) / (2 sqrt(b1b2))
+
+    which is what this returns, so the two formulas are one formula and each
+    checks the other (asserted in the suite, to 2e-15 over a grid).
+
+    Two things follow. Delta >= 1 by AM-GM, equality exactly at b1 = b2: this
+    model is entirely ferroelectric and has no antiferroelectric phase, so it
+    has no island. And its weights never satisfy c1c2 >= a1a2, which would
+    read (1-b1)(1-b2) >= 1 -- impossible on (0,1). CFTP is therefore not
+    merely untried here but inapplicable, which is why this module carries a
+    sequential sampler of its own.
+    """
     return (b1 + b2) / (2.0 * np.sqrt(b1 * b2))
