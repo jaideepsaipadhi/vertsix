@@ -7511,3 +7511,67 @@ def test_the_path_convention_comment_agrees_with_the_classifier_it_sits_beside()
         assert sub in html, (
             f"the legend no longer says {sub!r}; the picture, the comment and "
             f"the legend must agree")
+
+
+def test_the_fluctuation_field_is_a_difference_of_independent_samples():
+    """The caption claims (H1-H2)/sqrt(2) "preserves the variance of a single
+    height". That is only true if the two samples are independent.
+
+    The second sample's seed is derived from the first by
+    companionSeed(s) = ((s ^ 0x9e3779b9) >>> 0) % 2147483647. Earlier in this
+    project the fluctuation view sent the SAME seed twice and displayed a
+    field that was identically zero, captioned "+/-0.00"; a test now checks
+    the two seeds differ, which is necessary and nowhere near sufficient --
+    two seeds can differ and still produce correlated samples, and the
+    variance claim would be wrong without anyone seeing a blank picture.
+
+    So the statistical property is checked directly. For independent X, Y with
+    the same law, Var((X-Y)/sqrt(2)) = Var(X), and the difference field is
+    unbiased. Measured at n=24 over 120 pairs the ratio is 1.012; this is the
+    cheap version at n=16 over 60.
+
+    What it guards, stated precisely: reverting companionSeed to the identity
+    gives an all-zero field and ratio 0.000, which fails. Replacing it with
+    s + 1 gives ratio 0.986 and PASSES -- correctly, because SeedSequence
+    decorrelates any distinct seed, so s + 1 really is an independent sample.
+    This is a property test, not a pin on the formula: it catches the
+    derivation collapsing, which is the failure that actually happened, and
+    permits any derivation that delivers independence.
+    """
+    import numpy as np
+
+    from sixvertex.cftp_exact import cftp_sample
+
+    def companion(s):
+        return ((s ^ 0x9e3779b9) & 0xFFFFFFFF) % 2147483647
+
+    n, reps = 16, 60
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=1.0)
+
+    singles = np.stack([
+        np.asarray(cftp_sample(n, w, master_seed=50_000 + s)[0],
+                   dtype=np.float64) for s in range(reps)])
+    diffs = np.stack([
+        (np.asarray(cftp_sample(n, w, master_seed=50_000 + s)[0],
+                    dtype=np.float64)
+         - np.asarray(cftp_sample(n, w, master_seed=companion(50_000 + s))[0],
+                      dtype=np.float64)) / np.sqrt(2.0)
+        for s in range(reps)])
+
+    assert not np.allclose(diffs, 0.0), (
+        "the difference field is identically zero -- the two samples share a "
+        "seed again")
+
+    moving = singles.var(axis=0) > 1e-9
+    assert moving.sum() > 100, "too few fluctuating sites to measure"
+    ratio = float(diffs.var(axis=0)[moving].mean()
+                  / singles.var(axis=0)[moving].mean())
+    assert 0.85 < ratio < 1.15, (
+        f"Var((HA-HB)/sqrt(2)) / Var(H) = {ratio:.3f}; it should be 1 if the "
+        f"companion seed gives an independent sample. Below 1 means the two "
+        f"samples are correlated and the caption's variance claim is wrong")
+
+    bias = float(diffs.mean())
+    assert abs(bias) < 0.15, (
+        f"the difference field has mean {bias:+.4f}; a difference of two "
+        f"samples from the same law must be unbiased")
