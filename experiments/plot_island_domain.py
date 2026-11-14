@@ -20,9 +20,17 @@ NOR BY AREA, which is the first objection to make and which this note used to
 leave unanswered. "The same n" does not mean the same number of cells: the
 four domains hold 2304, 1536, 1280 and 2048 faces, a range of 1.80x. That
 matters because R_lo IS size-dependent -- experiments/plot_shift_size.py
-measures +0.0088 going from n=16 to n=32 on the square, a 4x change in cells,
-at 3.0 sigma. Scaled to a 1.80x range that allows at most about 0.004, which
-is 2% of the 0.185 spread seen here.
+measures, on the CSVs shipped here, +0.0101 +- 0.0039 (2.6 sigma) at
+Delta=-1.5 and +0.0092 +- 0.0049 (1.9 sigma) at Delta=-3.0 going from n=16 to
+n=32, a 4x change in cells. Scaled to a 1.80x range -- the shift goes as the
+log of the cell count, so by log(1.80)/log(4) = 0.42 -- that allows at most
+about 0.004, which is 2% of the 0.185 spread seen here.
+
+(This paragraph used to cite "+0.0088 ... at 3.0 sigma", which is neither of
+the two measurements and overstates the better of them. The bound it supports
+is unchanged -- 0.0101 scaled by 0.42 is still 0.004 -- but the number was
+not one plot_shift_size produces, and it is pinned to that script's own
+output now.)
 
 The ordering settles it more directly than the bound does. If area drove
 R_lo, R_lo would rise with cell count, as it does with n on the square. It
@@ -45,8 +53,13 @@ three lobes can each host their own, so which one is measured may change from
 sample to sample. The staircase number is reported, not trusted.
 
 The notch matters most for the conclusion: its island IS cleanly separated
-(50.6x) and its R_lo is still five times the square's, so the domain
-dependence is not an artifact of ambiguous component selection.
+(50.6x) and its R_lo is still a factor of five FROM the square's -- 0.047
+against 0.232, the two ends of the whole spread -- so the domain dependence
+is not an artifact of ambiguous component selection. (This read "five times
+the square's", which has the ratio upside down: the notch is the low end, at
+one fifth of the square, not five times it. The argument is the same either
+way, since what it needs is that the two extremes of the spread are both
+cleanly separated.)
 """
 from __future__ import annotations
 

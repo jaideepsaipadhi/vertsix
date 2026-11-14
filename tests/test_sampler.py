@@ -9473,3 +9473,110 @@ def test_the_asymptotics_figure_quotes_the_trend_its_own_csv_gives():
         assert phrase in flat, (
             f"the docstring no longer records {phrase!r}; the numbers above "
             f"would then read as if they had always been right")
+
+
+def test_the_domain_figure_quotes_the_numbers_two_scripts_actually_produce():
+    """plot_island_domain.py's conclusion is that the island width R_lo
+    depends on the DOMAIN SHAPE, not on its area. Two of the numbers holding
+    that argument up were wrong, in opposite ways, and both only showed up on
+    recomputation.
+
+    The size-dependence citation. The note said plot_shift_size.py "measures
+    +0.0088 going from n=16 to n=32 on the square ... at 3.0 sigma". Run on
+    the CSVs shipped in this repository that script measures +0.0101 +- 0.0039
+    (2.6 sigma) at Delta=-1.5 and +0.0092 +- 0.0049 (1.9 sigma) at Delta=-3.0.
+    +0.0088 is neither, and 3.0 sigma is better than either. The bound it
+    supports is unchanged -- scaled by log(1.80)/log(4) = 0.42 the larger
+    shift is still 0.004, 2% of the 0.185 spread -- but a number that no
+    script produces has no business carrying an argument.
+
+    The ratio was upside down. "its R_lo is still five times the square's",
+    of the notch, which measures 0.047 against the square's 0.232. The notch
+    is ONE FIFTH of the square and is the low end of the spread. The argument
+    survives -- it needs both extremes to be cleanly separated, which they are
+    at 50.6x and 44.6x -- but as written it said the opposite of the data.
+
+    This test recomputes both sides: the four domains' R_lo and separations
+    through plot_island_domain's own loader, and the n=16 vs n=32 shifts
+    through plot_shift_size's, and holds the docstring to them.
+
+    It also pins the file ORDER, which is a trap I fell into myself: passing
+    the n=32 CSV into the n=16 slot silently relabels the columns and flips
+    the sign of every difference, so the script appears to contradict its own
+    docstring. The CSVs carry their n, so the order is checked rather than
+    assumed.
+    """
+    import csv
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    doc = (root / "experiments" / "plot_island_domain.py").read_text()
+
+    # the two shift CSVs, identified by their own n column rather than by name
+    paths = {}
+    for name in ("shift_delta_chain_sample.csv",
+                 "shift_delta_chain_n32_sample.csv"):
+        rows = list(csv.DictReader((root / "experiments" / name).open()))
+        ns = {int(r["n"]) for r in rows}
+        assert len(ns) == 1, (name, ns)
+        paths[ns.pop()] = rows
+    assert set(paths) == {16, 32}, sorted(paths)
+
+    def by_delta(rows):
+        return {float(r["delta"]): (float(r["R_lo"]), float(r["se_lo"]))
+                for r in rows}
+
+    a, b = by_delta(paths[16]), by_delta(paths[32])
+    shifts = {}
+    for d in sorted(set(a) & set(b), reverse=True):
+        (r16, s16), (r32, s32) = a[d], b[d]
+        diff = r32 - r16
+        se = float(np.hypot(s16, s32))
+        shifts[d] = (diff, se, abs(diff) / se)
+    assert len(shifts) >= 4, shifts
+
+    # the docstring's two quoted shifts must be the measured ones
+    for d in (-1.5, -3.0):
+        m = re.search(
+            rf"([+-]0\.\d+) \+- (0\.\d+) \((\d\.\d) sigma\) at\s*\n?\s*"
+            rf"Delta={d:g}", doc)
+        assert m, f"the Delta={d:g} shift is no longer quoted"
+        diff, se, nsig = shifts[d]
+        assert abs(diff - float(m.group(1))) < 1e-4, (d, diff, m.group(1))
+        assert abs(se - float(m.group(2))) < 1e-4, (d, se, m.group(2))
+        assert abs(nsig - float(m.group(3))) < 0.06, (d, nsig, m.group(3))
+
+    # n=32 really is ABOVE n=16 at the shallow points, which is the direction
+    # the whole size-dependence argument assumes
+    assert shifts[-1.5][0] > 0 and shifts[-3.0][0] > 0, shifts
+
+    # the four domains' R_lo, and the notch/square ratio the note gets right now
+    dom = list(csv.DictReader(
+        (root / "experiments" / "island_domain_sample.csv").open()))
+    rlo = {r["domain"]: float(r["R_lo"]) for r in dom}
+    assert {"square", "notch"} <= set(rlo), sorted(rlo)
+    assert rlo["notch"] < rlo["square"], (
+        "the notch no longer sits below the square; the docstring's "
+        "'one fifth of the square' is then wrong again")
+    assert 4.0 < rlo["square"] / rlo["notch"] < 6.0, (
+        f"square/notch is {rlo['square'] / rlo['notch']:.2f}, no longer the "
+        f"factor of five the note claims")
+
+    # A blanket ban on the retired string does not work -- the paragraph that
+    # retires a claim has to quote it -- but dropping the ban entirely leaves
+    # the inverted sentence free to come back while the correction below it
+    # still reads correctly, which is exactly what the mutation harness
+    # caught. So the ban is SCOPED: the retired wording may appear only
+    # inside a parenthetical correction, never in the claim text.
+    flat = " ".join(doc.split())
+    claim_text = re.sub(r"\((?:This|this) (?:read|paragraph)[^)]*\)", "", flat)
+    for retired in ("five times the square's", "+0.0088"):
+        assert retired in flat, (
+            f"the correction recording {retired!r} is gone, so the number "
+            f"would read as if it had always been right")
+        assert retired not in claim_text, (
+            f"{retired!r} is back in the docstring's CLAIM text, not only in "
+            f"the parenthetical that retires it")
+    for phrase in ("one fifth of the square", "has the ratio upside down"):
+        assert phrase in flat, f"the docstring no longer records {phrase!r}"
