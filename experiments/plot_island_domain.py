@@ -16,6 +16,26 @@ four domains at the SAME Delta and the same n, from 0.232 on the square to
 0.047 on the notch. That is far outside the error bars and is not explained by
 dispersion, since the histograms are equally narrow everywhere.
 
+NOR BY AREA, which is the first objection to make and which this note used to
+leave unanswered. "The same n" does not mean the same number of cells: the
+four domains hold 2304, 1536, 1280 and 2048 faces, a range of 1.80x. That
+matters because R_lo IS size-dependent -- experiments/plot_shift_size.py
+measures +0.0088 going from n=16 to n=32 on the square, a 4x change in cells,
+at 3.0 sigma. Scaled to a 1.80x range that allows at most about 0.004, which
+is 2% of the 0.185 spread seen here.
+
+The ordering settles it more directly than the bound does. If area drove
+R_lo, R_lo would rise with cell count, as it does with n on the square. It
+does not: the two LARGEST domains sit at the two extremes --
+
+    square      2304 cells    R_lo 0.232   (highest)
+    notch       2048 cells    R_lo 0.047   (lowest)
+    staircase   1536 cells    R_lo 0.208
+    plus        1280 cells    R_lo 0.083
+
+-- so the spread is not ordered by area in any direction, and the domain
+dependence is a property of the shape.
+
 One caveat the figure shows rather than hides: the island is only
 well-separated on some of these domains. Panel (b) is the ratio of the largest
 c-component to the runner-up. On the square and the notch it is 45-51x, so

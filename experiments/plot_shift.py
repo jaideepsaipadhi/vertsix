@@ -60,12 +60,22 @@ def constant_fit(v, s):
 def trend(x, v, s):
     """Weighted linear regression slope and its two-sided p.
 
-    Reported alongside the constant fit because the two disagree, and the
-    disagreement is about statistical power, not about the data. The omnibus
-    chi-square spends one degree of freedom per point testing every direction
-    of departure at once and returns p=0.09 here; the slope tests the single
-    direction actually at issue -- does R drift with Delta -- and returns
-    p=0.008 on the same numbers.
+    Reported alongside the constant fit because the two have different power,
+    not different data. The omnibus chi-square spends one degree of freedom
+    per point testing every direction of departure at once; the slope tests
+    the single direction actually at issue -- does R drift with Delta.
+    Recomputed from the committed shift_delta_sample.csv through this file's
+    own load() and constant_fit():
+
+        constant fit   chi2 13.62 on 6 dof    p = 0.034
+        slope          +0.0095 +- 0.0036      p = 0.0077  (2.7 sigma)
+
+    An earlier version of this paragraph quoted the omnibus as p=0.09 and
+    built an argument on the two tests DISAGREEING -- one rejecting
+    constancy, one not. On these numbers both reject it at 0.05, so there is
+    no disagreement to explain; what survives is only that the slope is the
+    sharper instrument, by a factor of about four in p. The general point
+    stands, the specific contrast did not.
 
     The cut point is not chosen from the data. An earlier version split the
     points at Delta=-2 after seeing where the drop looked like it was, which

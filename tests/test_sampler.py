@@ -6247,3 +6247,209 @@ def test_every_grid_cell_of_experiment_one_gets_its_own_seeds():
 
     # +0.5 and -0.5 are the pair that an unsigned encoding merges
     assert not (blocks[(16, 0.5)] & blocks[(16, -0.5)])
+
+
+def test_the_theta_exponent_carries_its_interval_and_names_its_inversions():
+    """Panel (b) of plot_island_order plotted theta as a bare line.
+
+    The CSV's se column was read for panel (a) and never used for the
+    exponent, while the docstring claimed an error "of order 0.2" -- so seven
+    values spanning 0.16 to 1.15 were drawn as if resolved. Propagated, the
+    standard error is 0.12 to 0.20, which is wide enough that the committed
+    sample's two ordering inversions are both inside the noise, and the
+    docstring used to claim "the ORDERING is solid" while naming only one of
+    them.
+
+    Three things are pinned: the interval is nonzero and of the stated size,
+    the deep and shallow ends are genuinely distinguished, and a CSV with too
+    few sizes is refused rather than fitted.
+    """
+    import csv
+    import pathlib
+
+    import pytest
+
+    from experiments.plot_island_order import theta_with_interval
+
+    src = (pathlib.Path(__file__).resolve().parent.parent / "experiments"
+           / "island_order_sample.csv")
+    rows = list(csv.DictReader(src.open()))
+    sizes = sorted({int(r["n"]) for r in rows})
+    assert len(sizes) >= 3
+
+    out = {d: theta_with_interval(rows, d, sizes, reps=4000)
+           for d in (-0.75, -1.0, -1.25, -1.5, -3.0)}
+
+    # the interval is real and of the size the docstring states
+    for d, (t, se, lo, hi) in out.items():
+        assert 0.05 < se < 0.35, (d, se)
+        assert lo < t < hi, (d, t, lo, hi)
+
+    # the ends are distinguished: filament at the shallow end, blob at the deep
+    assert out[-0.75][2] > 0.4, "theta at Delta=-0.75 no longer excludes 0"
+    assert out[-3.0][3] < 0.7, "theta at Delta=-3 no longer excludes 1"
+
+    # and the -1.25 / -1.5 inversion is inside the noise, not structure
+    t125, se125 = out[-1.25][0], out[-1.25][1]
+    t150, se150 = out[-1.5][0], out[-1.5][1]
+    assert t125 < t150, (
+        "the -1.25 / -1.5 inversion is gone; the docstring records it")
+    assert abs(t150 - t125) < 2 * (se125 ** 2 + se150 ** 2) ** 0.5, (
+        f"the inversion is now larger than the noise ({t125:.3f} vs "
+        f"{t150:.3f}), which would be a finding rather than a caveat")
+
+    # too few sizes is refused, not fitted to a confident-looking number
+    with pytest.raises(SystemExit, match="at least three"):
+        theta_with_interval(rows, -3.0, [32], reps=10)
+
+
+def test_the_island_figure_marks_the_measured_crossing_not_only_the_predicted_one():
+    """plot_island_exists.py promised a marked crossing and drew none.
+
+    Its only vertical line was Delta = -1, the prediction, while the docstring
+    said "the crossing point of successive sizes is marked ... that, not the
+    midpoint of any single curve, is the finite-size estimate". So the figure
+    showed the expected answer and not the measured one.
+
+    The measured crossings move DEEPER with N (-1.125 then -1.357), away from
+    -1, and each rests on bracketing P differences no larger than their
+    standard errors. Both halves are pinned: the drift, and that it is not
+    significant -- if a later sample makes it significant that is a finding
+    and this test should be re-read, not silenced.
+    """
+    import csv
+    import pathlib
+
+    from experiments.plot_island_exists import curve_crossings
+
+    src = (pathlib.Path(__file__).resolve().parent.parent / "experiments"
+           / "island_exists_sample.csv")
+    rows = list(csv.DictReader(src.open()))
+    sizes = sorted({int(r["n"]) for r in rows})
+    assert len(sizes) >= 3
+
+    found = []
+    for i in range(len(sizes) - 1):
+        for x, bd, bse in curve_crossings(rows, sizes[i], sizes[i + 1]):
+            found.append((sizes[i], sizes[i + 1], x, bd, bse))
+
+    assert len(found) >= 2, f"no crossings located: {found}"
+
+    # every crossing sits below Delta = -1, not at it
+    for n1, n2, x, _bd, _bse in found:
+        assert x < -1.0, (
+            f"crossing of N={n1},{n2} is at Delta={x:+.3f}, at or above -1; "
+            f"the docstring records it as deeper")
+
+    # the position is INTERPOLATED, not snapped to a sampled Delta: a crossing
+    # that lands exactly on a grid point means the interpolation is not
+    # running, and that mutation survives every other assertion here
+    grid = sorted({float(r["delta"]) for r in rows})
+    for n1, n2, x, _bd, _bse in found:
+        assert all(abs(x - g) > 1e-9 for g in grid), (
+            f"crossing of N={n1},{n2} sits exactly on the sampled Delta "
+            f"{x:+.3f}, so it was snapped to a grid point rather than "
+            f"interpolated between the bracketing cells")
+
+    # and it moves deeper as N grows
+    assert found[-1][2] < found[0][2], (
+        f"the crossing no longer moves deeper with N: "
+        f"{[round(f[2], 3) for f in found]}")
+
+    # none of them is resolved -- judged by the BRACKETING cells, since the
+    # difference at the crossing is zero by construction
+    for n1, n2, x, bd, bse in found:
+        assert bd <= 1.5 * bse, (
+            f"crossing of N={n1},{n2} at {x:+.3f} now rests on a difference "
+            f"({bd:.4f}) well above its standard error ({bse:.4f}) -- that is "
+            f"a result, and the docstring's caveat needs rewriting")
+
+
+def test_the_domain_dependence_of_r_lo_is_not_explained_by_area():
+    """The four Gorin-Kenyon domains do not have the same number of cells.
+
+    plot_island_domain.py reports a factor-five spread in R_lo "at the SAME
+    Delta and the same n" and used not to mention that the domains hold 2304,
+    1536, 1280 and 2048 faces -- a 1.80x range, which matters because
+    plot_shift_size.py measures a real size dependence in R_lo (+0.0088 over a
+    4x change in cells, 3.0 sigma).
+
+    The refutation is the ordering, not the bound: if area drove R_lo it would
+    rise with cell count, and instead the two largest domains sit at the two
+    extremes. Pinned here, because this is the first question a referee asks.
+    """
+    import csv
+    import pathlib
+
+    import numpy as np
+
+    src = (pathlib.Path(__file__).resolve().parent.parent / "experiments"
+           / "island_domain_sample.csv")
+    rows = list(csv.DictReader(src.open()))
+    cells = np.array([int(r["cells"]) for r in rows], float)
+    r_lo = np.array([float(r["R_lo"]) for r in rows], float)
+    names = [r["domain"] for r in rows]
+
+    assert len(rows) >= 4
+    spread = r_lo.max() - r_lo.min()
+    assert spread > 0.1, f"the spread this test is about is gone: {spread}"
+
+    # the size effect cannot account for it: +0.0088 per 4x in cells
+    allowed = 0.0088 * np.log(cells.max() / cells.min()) / np.log(4.0)
+    assert allowed < 0.1 * spread, (
+        f"the known size dependence ({allowed:.4f}) is now a sizeable part of "
+        f"the {spread:.4f} spread, so area is no longer ruled out by magnitude")
+
+    # and the spread is not ordered by area in either direction
+    order = np.argsort(cells)
+    by_area = r_lo[order]
+    assert not np.all(np.diff(by_area) >= 0), "R_lo now rises with area"
+    assert not np.all(np.diff(by_area) <= 0), "R_lo now falls with area"
+
+    # concretely: the two largest domains are at the two extremes
+    big2 = set(np.array(names)[np.argsort(cells)[-2:]])
+    ends = {names[int(np.argmin(r_lo))], names[int(np.argmax(r_lo))]}
+    assert big2 == ends, (
+        f"the two largest domains {sorted(big2)} are no longer the two "
+        f"extremes of R_lo {sorted(ends)}; the docstring says they are")
+
+
+def test_the_shift_figure_quotes_the_p_values_its_own_sample_gives():
+    """plot_shift.py quoted the omnibus test as p=0.09; the sample gives 0.034.
+
+    The docstring built an argument on the two tests disagreeing -- the
+    omnibus failing to reject constancy while the slope rejected it. On the
+    committed sample both reject at 0.05, so the contrast was not there and
+    only the power difference is. Pinned by recomputing through the module's
+    own load() and fits, which is what a reader would do.
+    """
+    import pathlib
+    import sys
+
+    import numpy as np
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "experiments"))
+    from plot_shift import constant_fit, load, trend
+
+    rows = sorted(load(str(root / "experiments" / "shift_delta_sample.csv")),
+                  key=lambda r: r["delta"])
+    v = np.array([r["r_lo"] for r in rows])
+    s = np.array([r["se"] for r in rows])
+    x = np.array([r["delta"] for r in rows])
+
+    _m, chi2v, dof, p_const, _se = constant_fit(v, s)
+    slope, slope_se, _z, p_slope = trend(x, v, s)
+
+    assert dof == len(rows) - 1
+    assert abs(chi2v - 13.62) < 0.1, f"chi2 is now {chi2v:.2f}, docstring 13.62"
+    assert abs(p_const - 0.034) < 0.005, (
+        f"the omnibus p is now {p_const:.3f}; the docstring records 0.034 "
+        f"(and once wrongly recorded 0.09)")
+    assert abs(p_slope - 0.0077) < 0.0015, (
+        f"the slope p is now {p_slope:.4f}, docstring 0.0077")
+    assert abs(slope - 0.0095) < 0.001 and abs(slope_se - 0.0036) < 0.001
+
+    # the claim that survives: both reject constancy, the slope more sharply
+    assert p_const < 0.05 and p_slope < 0.05, (p_const, p_slope)
+    assert p_slope < p_const, "the slope is no longer the sharper instrument"
