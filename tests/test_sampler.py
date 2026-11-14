@@ -7667,3 +7667,147 @@ def test_off_region_violations_are_failures_of_stochastic_monotonicity():
         f"for 'no monotone coupling exists' is that the marginals are not "
         f"ordered; a violation of another kind would mean that argument does "
         f"not cover every case")
+
+
+def test_cftp_detects_a_ten_percent_error_in_a_single_weight():
+    """How small an error the exactness tests can actually see.
+
+    Audited by mutating cftp_exact's weight table and asking which tests
+    notice. Measured total-variation distance from the true measure at n=4,
+    weights a1=1.3 a2=0.8 b1=1.7 b2=0.6 c1=2.1 c2=1.4:
+
+        a1 <-> c1        TV 0.29964   caught by 3 tests
+        c1 *= 1.10       TV 0.02374   caught by NOTHING
+        c1 <-> c2        TV 0.00000   invisible, and correctly so -- under
+                                      DWBC #c1 - #c2 = n, so the swap
+                                      multiplies every weight by (c2/c1)^n
+                                      and the normalised measure is unchanged
+
+    So a 10% error in one vertex weight passed every exactness test in the
+    suite. Those tests draw a few thousand samples, where the total-variation
+    noise floor is around 0.05 -- well above 0.024 -- so they could not have
+    seen it however they were written.
+
+    This closes that gap by power rather than cleverness. 20000 CFTP samples
+    at n=4 cost 8 seconds, and a chi-square against the enumerated law then
+    detects the 10% error at p ~ 7e-8 (worst of 12 trials), while a correct
+    sampler gives p uniform on (0,1). The threshold is 1e-5: false failures
+    at one in a hundred thousand runs, and two orders of magnitude of margin
+    on the detection side.
+
+    What it still cannot see: an error below about TV 0.01 at this sample
+    size, and any relabelling that leaves the measure invariant -- for those,
+    the cross-table census and the label-swap invariance tests are the
+    instruments, not sampling.
+    """
+    import numpy as np
+    from scipy.stats import chisquare
+
+    from sixvertex.cftp_exact import cftp_sample, in_monotone_region
+
+    n, N = 4, 20000
+    w = dict(a1=1.3, a2=0.8, b1=1.7, b2=0.6, c1=2.1, c2=1.4)
+    assert in_monotone_region(w), "the test point must be inside the region"
+    assert len(set(w.values())) == 6, "all six weights must differ"
+
+    cfgs, exact_p, _z = exact_distribution(n, w)
+    assert len(cfgs) == 42, len(cfgs)
+    keys = {c.astype(np.int64).tobytes(): i for i, c in enumerate(cfgs)}
+
+    counts = np.zeros(len(cfgs))
+    for s in range(N):
+        H, _info = cftp_sample(n, w, master_seed=1_300_000 + s)
+        k = keys.get(np.asarray(H, dtype=np.int64).tobytes())
+        assert k is not None, "CFTP produced a configuration outside the state space"
+        counts[k] += 1
+
+    expected = exact_p * N
+    assert expected.min() > 5.0, (
+        f"the least likely configuration expects {expected.min():.1f} counts; "
+        f"the chi-square approximation needs more than 5")
+    chi, p = chisquare(counts, expected)
+    assert p > 1e-5, (
+        f"chi-square against the enumerated law gives p = {p:.3g} over "
+        f"{N} samples. A correct sampler gives p uniform on (0,1); a 10% "
+        f"error in one weight gives about 7e-8")
+
+    # and the sensitivity claim itself, so the threshold cannot quietly rot:
+    # the same counts tested against a 10%-off law must be rejected
+    _c2, wrong_p, _z2 = exact_distribution(n, dict(w, c1=w["c1"] * 1.10))
+    _chi2, p_wrong = chisquare(counts, wrong_p * N)
+    assert p_wrong < 1e-5, (
+        f"these {N} samples do not distinguish the true law from one with c1 "
+        f"10% off (p = {p_wrong:.3g}), so this test has lost the power its "
+        f"docstring claims")
+
+
+def test_the_domain_sampler_detects_a_ten_percent_error_in_a_single_weight():
+    """The same audit, for the general-domain sampler.
+
+    A 10% error injected into domains._weight_table's c1 entry passed all 20
+    domain-related tests in the suite. The gap was identical to the DWBC one:
+    the existing checks draw a few thousand samples, below the noise floor for
+    a total-variation shift of 0.028.
+
+    Choice of domain is not free, and the arithmetic says why. The chi-square
+    non-centrality per sample is sum (dp)^2/p, and for a 10% c1 error:
+
+        square n=4 (42 cfgs)      4.216e-03   ~20000 samples, 2.4 ms each
+        2-block N=6 (49 cfgs)     4.104e-03   ~20500 samples, 1.2 ms each
+        2-block N=4 (4 cfgs)      3.983e-32   UNDETECTABLE
+        staircase N=4 (2 cfgs)    0           UNDETECTABLE
+
+    The last two are the useful warning: on a domain with a handful of
+    configurations the c-vertex counts barely vary, so no number of samples
+    separates a 10% weight error from the truth. A cheap domain is not a cheap
+    test, and "it passed on the staircase" would have meant nothing.
+
+    So this runs on the 2-block N=6 -- 49 configurations, the best power per
+    second of the four -- and asserts both directions: that the sampler agrees
+    with the enumerated law, and that these samples would REJECT a law with c1
+    10% off, so the power cannot quietly rot away.
+    """
+    import numpy as np
+    from scipy.stats import chisquare
+
+    from sixvertex.domains import (cftp_sample as dom_sample, classify_counts,
+                                   domain_mask, in_monotone_region)
+    from experiments.brute_domain import enumerate_heights
+
+    N = 22000
+    w = dict(a1=1.3, a2=0.8, b1=1.7, b2=0.6, c1=2.1, c2=1.4)
+    assert in_monotone_region(w)
+
+    m = domain_mask([0, 3, 6], [0, 3, 6], [[1, 1], [0, 1]])
+    hs = enumerate_heights(m)
+    assert len(hs) == 49, len(hs)
+    counts_of = [classify_counts(H, m) for H in hs]
+    keys = {np.asarray(H, dtype=np.int64).tobytes(): i
+            for i, H in enumerate(hs)}
+
+    def law(weights):
+        v = np.array([np.prod([weights[k] ** c for k, c in cnt.items()])
+                      for cnt in counts_of], dtype=float)
+        return v / v.sum()
+
+    exact_p = law(w)
+    observed = np.zeros(len(hs))
+    for s in range(N):
+        H, _info = dom_sample(m, w, master_seed=1_700_000 + s)
+        k = keys.get(np.asarray(H, dtype=np.int64).tobytes())
+        assert k is not None, "the domain sampler left the state space"
+        observed[k] += 1
+
+    expected = exact_p * N
+    assert expected.min() > 5.0, expected.min()
+    _chi, p = chisquare(observed, expected)
+    assert p > 1e-5, (
+        f"chi-square against the enumerated law gives p = {p:.3g} over {N} "
+        f"samples on the 2-block domain")
+
+    wrong = law(dict(w, c1=w["c1"] * 1.10))
+    _chi2, p_wrong = chisquare(observed, wrong * N)
+    assert p_wrong < 1e-5, (
+        f"these {N} samples do not separate the true law from one with c1 10% "
+        f"off (p = {p_wrong:.3g}); the test has lost the power its docstring "
+        f"claims")
