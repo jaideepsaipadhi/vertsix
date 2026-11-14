@@ -2088,40 +2088,102 @@ def test_fluctuation_view_is_guarded_and_cleared_on_reset():
 
 
 def test_mixing_badge_is_smoothed_and_size_scaled():
-    """Reported: the badge flickered between its two messages several times a
-    second at small n.
+    """The badge's threshold and smoothing, as properties rather than literals.
 
-    Two causes. It compared two SINGLE samples and re-evaluated every
-    animation frame, so ordinary sampling noise flipped the verdict; and the
-    cutoff was a fixed 0.02, while the c-density's standard error falls like
-    1/n -- at n=11 the c-fraction already moves in steps of 1/121 = 0.008.
+    This asserted that the strings "0.9 * gapEMA" and "2.5 / n" appeared in
+    the source. That pins an implementation detail -- it fails if someone
+    legitimately retunes the coefficient -- and verifies neither thing that
+    matters: that the threshold actually brackets the equilibrium gap, and
+    that the average actually smooths.
 
-    Now: an exponential moving average, a 600 ms repaint throttle, and a
-    threshold scaling as 2.5/n with a floor. Measured after the fix, over six
-    seconds of running: n=11 gave 0 verdict flips, n=40 gave 1 (the genuine
-    one-way transition as it equilibrates), and a truly torpid case -- n=80,
-    b=3, ferroelectric and outside the monotone region -- stayed solidly red
-    with gap 0.529 against a threshold of 0.031.
+    Both are now checked by running the shipped expressions in node against
+    measurements. The calibration, at uniform weights:
+
+         n     tol      equilibrium gap sd    tol/sd    gap at 1 sweep
+        12    0.2083         0.0839            2.5x         0.750
+        16    0.1562         0.0529            3.0x         0.844
+        24    0.1042         0.0553            1.9x         0.906
+        32    0.0781         0.0316            2.5x         0.930
+
+    so tol must stay above the equilibrium gap (no false alarm) and below the
+    cold-start gap (the alarm fires when it should).
     """
-    import os
-    here = os.path.dirname(__file__)
-    js = open(os.path.join(here, "..", "static", "draw.js")).read()
-    code = "\n".join(ln for ln in js.splitlines()
-                     if not ln.strip().startswith("//"))
-    start = code.index("function updateMixingBadge")
-    body = code[start:start + 1800]
+    import json
+    import pathlib
+    import re
+    import shutil
+    import subprocess
 
-    assert "gapEMA" in body, "the badge uses the instantaneous gap; it will flicker"
-    assert "0.9 * gapEMA" in body, "no smoothing of the gap"
-    assert "lastBadgeUpdate" in body, "the badge repaints every animation frame"
-    assert "2.5 / n" in body, (
-        "the threshold does not scale with system size; a fixed cutoff fires "
-        "constantly at small n and is too loose at large n")
-    # a reset must start a fresh comparison rather than inherit the average
-    li = code.index("function localInit")
-    assert "gapEMA = null" in code[li:li + 800], (
-        "reset does not clear the smoothed gap")
+    import numpy as np
+    import pytest
 
+    from sixvertex.cftp_exact import (_colour_indices, _sweep, _weight_table,
+                                      cftp_sample, extremal_height)
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available to run the shipped badge expressions")
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "static" / "draw.js").read_text(encoding="utf-8")
+
+    tol_line = re.search(r"const tol = ([^;]+);", src)
+    assert tol_line, "the badge no longer computes a tolerance"
+    ema_line = re.search(r"gapEMA = gapEMA === null \? gap : ([^;]+);", src)
+    assert ema_line, "the badge no longer smooths the gap"
+
+    # the shipped tolerance, evaluated at each n
+    script = ("const tolFor = (n) => " + tol_line.group(1) + ";\n"
+              + "const emaStep = (gapEMA, gap) => " + ema_line.group(1) + ";\n"
+              + "let e = null; const trace = [];\n"
+              + "for (let k = 0; k < 40; k++) { e = e === null ? 0.5 : emaStep(e, 0.5); }\n"
+              + "const converged = e;\n"
+              + "let spike = e; spike = emaStep(spike, 5.0);\n"
+              + "console.log(JSON.stringify({tol: [12,16,24,32].map(tolFor), "
+                "converged: converged, afterSpike: spike}));")
+    out = subprocess.run([node, "-e", script], capture_output=True, text=True,
+                         timeout=60)
+    assert out.returncode == 0, out.stderr[:400]
+    got = json.loads(out.stdout.strip().splitlines()[-1])
+
+    # the average smooths: it converges to a constant input, and one spike
+    # moves it by far less than the spike itself
+    assert abs(got["converged"] - 0.5) < 0.01, got
+    assert got["afterSpike"] - got["converged"] < 0.5 * (5.0 - 0.5), (
+        f"a single spike moved the average by "
+        f"{got['afterSpike'] - got['converged']:.3f} of a 4.5 jump; it is not "
+        f"smoothing")
+
+    # the threshold brackets the gap at every size
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=1.0)
+
+    def bdens(H, n):
+        H = np.asarray(H, dtype=np.int64)
+        tl, tr = H[:n, :n], H[:n, 1:]
+        bl, br = H[1:, :n], H[1:, 1:]
+        l, t = (bl - tl) == 1, (tr - tl) == 1
+        b, r = (br - bl) == 1, (br - tr) == 1
+        return float(((~l & t & b & ~r) | (l & ~t & ~b & r)).sum()) / (n * n)
+
+    for n, tol in zip((12, 16, 24, 32), got["tol"]):
+        eq = [bdens(cftp_sample(n, w, master_seed=6000 + s)[0], n)
+              for s in range(30)]
+        gap_sd = float(np.std(eq, ddof=1)) * np.sqrt(2.0)
+        tbl = _weight_table(w)
+        ci, size = _colour_indices(n)
+        A = extremal_height(n, "lo").astype(np.float64)
+        B = extremal_height(n, "hi").astype(np.float64)
+        rA, rB = np.random.default_rng(1), np.random.default_rng(2)
+        A = _sweep(A, tbl, rA.random(A.shape), ci, size)
+        B = _sweep(B, tbl, rB.random(B.shape), ci, size)
+        cold = abs(bdens(A, n) - bdens(B, n))
+
+        assert tol > 1.5 * gap_sd, (
+            f"n={n}: tol {tol:.4f} is only {tol / gap_sd:.1f}x the "
+            f"equilibrium gap sd {gap_sd:.4f}; the badge will false-alarm")
+        assert tol < cold, (
+            f"n={n}: tol {tol:.4f} exceeds the cold-start gap {cold:.3f}, so "
+            f"the badge stays quiet on a completely unequilibrated chain")
 
 def test_stochastic_paths_are_drawn_from_arrows_not_the_height_function():
     """Reported: the stochastic picture showed only two vertex types.
@@ -7376,3 +7438,76 @@ def test_the_height_export_marks_corners_outside_the_domain():
         "heightsAsText no longer checks whether a corner is in the domain")
     assert "blank = lattice corner outside the domain" in js, (
         "the export header no longer documents the blank marker")
+
+
+def test_the_path_convention_comment_agrees_with_the_classifier_it_sits_beside():
+    """drawPaths listed "(3) b1 vertical (4) b2 horizontal" -- backwards.
+
+    That was the eighth statement of the b1/b2 geometry in the tree and the
+    only one disagreeing with the other seven, including the legend the user
+    reads in index.html ("b1 (horizontal through)"). The drawing was never
+    affected -- drawPaths works from the edge bits, and b1's bits draw a
+    horizontal line whatever a comment claims -- but the comment cites Figure
+    1 of the paper and tells a reader how to read the picture.
+
+    A prose sweep is the wrong instrument here: the narrative comments in
+    static/sixvertex.js that DESCRIBE the historical error ("weighted the
+    vertical face as b1") trip any such check, and building a brittle text
+    matcher is the mistake this suite keeps correcting. So the comment's
+    direction word is checked against what the SHIPPED classifier actually
+    returns for that geometry.
+    """
+    import json
+    import pathlib
+    import re
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available to run the shipped classifier")
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "static" / "draw.js").read_text(encoding="utf-8")
+
+    # what the comment in drawPaths claims
+    paths = src[src.index("function drawPaths"):]
+    paths = paths[:paths.index("const n = frame.n;")]
+    claimed = {}
+    for label, word in re.findall(r"\((?:3|4)\)\s*(b1|b2)\s+(HORIZONTAL|VERTICAL|horizontal|vertical)",
+                                  paths):
+        claimed[label] = word.lower()
+    assert claimed == {"b1": "horizontal", "b2": "vertical"}, (
+        f"drawPaths' convention list reads {claimed}; every other statement "
+        f"in the tree, and the legend in index.html, has b1 horizontal and "
+        f"b2 vertical")
+
+    # what the shipped classifier returns for each geometry.
+    # horizontal through = left and right edges occupied; vertical = top and
+    # bottom.
+    i = src.index("function classifyBits")
+    body = src[i:src.index("\n  }", i) + 4]
+    script = (body + "\nconsole.log(JSON.stringify({"
+              + "horizontal: classifyBits(true,false,false,true),"
+              + "vertical: classifyBits(false,true,true,false)}));")
+    out = subprocess.run([node, "-e", script], capture_output=True, text=True,
+                         timeout=60)
+    assert out.returncode == 0, out.stderr[:400]
+    got = json.loads(out.stdout.strip().splitlines()[-1])
+
+    for direction, label in got.items():
+        assert claimed[label] == direction, (
+            f"the shipped classifyBits calls the {direction} through-vertex "
+            f"{label}, while drawPaths' comment calls {label} "
+            f"{claimed[label]}")
+
+    # and the user-facing legend says the same thing
+    html = (root / "static" / "index.html").read_text(encoding="utf-8")
+    assert "(horizontal through)" in html and "(vertical through)" in html
+    for label, direction in claimed.items():
+        sub = f"b<sub>{label[-1]}</sub> ({direction} through)"
+        assert sub in html, (
+            f"the legend no longer says {sub!r}; the picture, the comment and "
+            f"the legend must agree")

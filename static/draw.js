@@ -780,8 +780,17 @@
   function drawPaths(frame, scale) {
     // Standard six-vertex path convention (Gorin-Kenyon, arXiv:2408.14446,
     // Figure 1): paths run along lattice edges through each vertex --
-    //   (1) a1 empty   (2) a2 crossing   (3) b1 vertical
-    //   (4) b2 horizontal   (5) c1 turn   (6) c2 turn
+    //   (1) a1 empty   (2) a2 crossing   (3) b1 HORIZONTAL
+    //   (4) b2 VERTICAL   (5) c1 turn   (6) c2 turn
+    //
+    // Those two were the wrong way round here -- the eighth statement of the
+    // b1/b2 geometry in the tree and the only one that disagreed with the
+    // other seven, including the legend the user reads in index.html. The
+    // drawing was never affected: it works from the edge bits directly, and
+    // b1's bits (l and r set) draw a horizontal line whatever a comment says.
+    // But this comment cites Figure 1 of the paper and tells a reader how to
+    // read the picture, so it was telling them the opposite of the legend
+    // beside it.
     //
     // The four bits already computed for the face type ARE the occupied
     // edges: l,t,b,r set means the left/top/bottom/right edge carries path.
@@ -1232,12 +1241,19 @@
     // steps of 1/121, already 0.008) and is too loose at large n. Scale it,
     // with a floor so it never becomes hair-trigger.
     //
-    // Measured at equilibrium, the b-density's standard deviation is 0.046,
-    // 0.036 and 0.018 at n = 12, 24, 48 -- about 2.5x the c-density's -- so
-    // the gap between two chains has sd about sqrt(2) times that. tol is
-    // 0.208, 0.104 and 0.052 there, so it stays a factor of 2 to 3 above the
-    // equilibrium gap at every size: loose enough not to false-alarm, and
-    // still crossed for hundreds of sweeps from a cold start.
+    // Measured at equilibrium, the b-density's standard deviation is about
+    // 2.5x the c-density's, so the GAP between two independent chains has sd
+    // sqrt(2) times that. Measured directly:
+    //
+    //      n     tol      equilibrium gap sd    tol/sd    gap at 1 sweep
+    //     12    0.2083         0.0839            2.5x         0.750
+    //     16    0.1562         0.0529            3.0x         0.844
+    //     24    0.1042         0.0553            1.9x         0.906
+    //     32    0.0781         0.0316            2.5x         0.930
+    //
+    // so tol sits 1.9x to 3.0x above the equilibrium gap -- loose enough not
+    // to false-alarm -- while the cold-start gap is 0.75 to 0.93, an order of
+    // magnitude clear of it, and stays above tol for hundreds of sweeps.
     const n = sampler.n;
     const tol = Math.max(0.02, 2.5 / n);
 
