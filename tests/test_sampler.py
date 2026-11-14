@@ -7811,3 +7811,204 @@ def test_the_domain_sampler_detects_a_ten_percent_error_in_a_single_weight():
         f"these {N} samples do not separate the true law from one with c1 10% "
         f"off (p = {p_wrong:.3g}); the test has lost the power its docstring "
         f"claims")
+
+
+def test_the_stochastic_thresholds_are_exact_to_machine_precision():
+    """The stochastic sampler can be checked exactly; sampling it cannot.
+
+    Audited like the others: scaling b1 by 1.02 inside sample() fails two
+    tests, but scaling it by 1.005 passes everything. 60000 draws at n=3 give
+    good power -- far better than the 10% CFTP blind spot -- but still a 0.5%
+    blind spot in a PROBABILITY parameter.
+
+    Unlike CFTP, this sampler does not need statistics. Its whole content is
+    two thresholds: given (h_in, v_in) = (1,0) the outgoing pair is (1,0) when
+    u < b1 and (0,1) otherwise, and given (0,1) it is (0,1) when u < b2 and
+    (1,0) otherwise. Feeding chosen u values straight through the RNG pins
+    each threshold to 1e-12 -- a relative error of 3e-12 in b1 -- which is a
+    different kind of check from "the histogram looks right", and the analogue
+    of comparing the sequential sampler's partition function exactly.
+
+    Reaching a (0,1) vertex takes some driving, and the sequence is the test's
+    one subtlety. Under the step initial condition h[:,0] = 1 and v[0,:] = 0,
+    so column 0 never presents (0,1). At n=3, feeding u = (b1/2, 1, 1, x):
+    vertex (0,0) goes straight, (0,1) turns and so sets v[1,1] = 1, (1,0)
+    turns and so sets h[1,1] = 0, and vertex (1,1) then sees exactly
+    (h_in, v_in) = (0,1) and tests x against b2.
+    """
+    import numpy as np
+
+    import sixvertex.stochastic as st
+
+    class StubRNG:
+        """Feeds a fixed sequence of uniforms, then zeros."""
+
+        def __init__(self, vals):
+            self.vals = list(vals)
+            self.i = 0
+
+        def random(self, *a, **k):
+            v = self.vals[self.i] if self.i < len(self.vals) else 0.0
+            self.i += 1
+            return v
+
+    b1, b2 = 0.35, 0.6
+    real = st.np.random.default_rng
+    try:
+        # the b1 threshold, on a (1,0) vertex: n=1 presents one immediately
+        for eps, want in ((-1e-12, (1, 0)), (+1e-12, (0, 1))):
+            st.np.random.default_rng = (
+                lambda seed=None, _v=[b1 + eps]: StubRNG(_v))
+            h, v = st.sample(1, b1, b2)
+            got = (int(h[0, 1]), int(v[1, 0]))
+            assert got == want, (
+                f"with u = b1 {eps:+.0e} the (1,0) vertex emitted {got}, not "
+                f"{want}: the b1 threshold is not at b1")
+
+        # the b2 threshold, on a (0,1) vertex reached as the docstring says
+        for eps, want in ((-1e-12, (0, 1)), (+1e-12, (1, 0))):
+            st.np.random.default_rng = (
+                lambda seed=None, _v=[b1 * 0.5, 1.0, 1.0, b2 + eps]:
+                StubRNG(_v))
+            h, v = st.sample(3, b1, b2)
+            got = (int(h[1, 2]), int(v[2, 1]))
+            assert got == want, (
+                f"with u = b2 {eps:+.0e} the (0,1) vertex emitted {got}, not "
+                f"{want}: the b2 threshold is not at b2")
+    finally:
+        st.np.random.default_rng = real
+
+    # the deterministic vertices consume no randomness and cannot be wrong:
+    # (1,1) -> (1,1) and (0,0) -> (0,0), checked by driving a grid with a
+    # stub that would be exhausted if either branch drew a number
+    try:
+        drawn = {"n": 0}
+
+        class Counting(StubRNG):
+            def random(self, *a, **k):
+                drawn["n"] += 1
+                return super().random(*a, **k)
+
+        st.np.random.default_rng = lambda seed=None: Counting([0.0] * 64)
+        st.sample(4, b1, b2)
+        assert drawn["n"] <= 16, (
+            f"a 4x4 sweep drew {drawn['n']} uniforms; at most one per vertex "
+            f"is possible, and the two deterministic branches should draw "
+            f"none")
+    finally:
+        st.np.random.default_rng = real
+
+
+def test_the_cftp_heat_bath_threshold_is_exact_to_machine_precision():
+    """Corrects a claim I made one commit ago, and then corrects the fix.
+
+    That commit said CFTP "has no exact Z to compare against, so it is
+    irreducibly sampling-limited", and set its detection threshold at a
+    total-variation distance of 0.024 using 20000 samples. The first half is
+    true and the conclusion does not follow. CFTP's correctness splits in two:
+
+      (a) the local update -- the weight table and the heat-bath probability
+          it implies -- a deterministic function of the weights, checkable to
+          machine precision;
+      (b) the CFTP scheme itself, which rests on the monotone-coupling
+          argument, exhaustively verified elsewhere in this file.
+
+    _sweep takes the random field as an ARGUMENT, so (a) needs no
+    monkeypatching: feed it a chosen uniform and see where the flip happens.
+
+    THE FIRST VERSION OF THIS TEST WAS WEAK AND THE REASON IS WORTH KEEPING.
+    It used n=2, where the single interior site has up-faces {a2, c1, c1, a1}
+    and down-faces {c1, b2, b1, c1}. c1 appears TWICE in each, so it cancels
+    in p_up = w(up)/(w(up) + w(down)) -- scaling c1 by 1.10 left the threshold
+    bit-identical and the test passed. A heat-bath threshold only sees weights
+    whose MULTIPLICITY DIFFERS between the two branches, and c2 did not appear
+    at all.
+
+    So the sites are chosen by that criterion instead of by convenience: the
+    test searches the enumerated configurations for flip sites until every one
+    of the six weights has differing multiplicity at some site, asserts that
+    coverage, and pins the threshold at each. At n=3 site (1,1) there is a
+    flip with difference {c1: +1, c2: +1, b1: -1, b2: -1}, which is what
+    brings the c weights in.
+    """
+    import collections
+
+    import numpy as np
+
+    from sixvertex.cftp_exact import (_colour_indices, _sweep, _weight_table,
+                                      extremal_height)
+
+    # the convention, written out so this test holds it independently of
+    # domains.FACE (the executable census keeps the tables agreeing)
+    LEGAL = {(0, 0, 0, 0): "a1", (1, 1, 1, 1): "a2",
+             (1, 1, 0, 0): "c1", (0, 0, 1, 1): "c2",
+             (1, 0, 0, 1): "b1", (0, 1, 1, 0): "b2"}
+    w = dict(a1=1.3, a2=0.8, b1=1.7, b2=0.6, c1=2.1, c2=1.4)
+
+    def face_types(Hh, n):
+        out = []
+        for i in range(n):
+            for j in range(n):
+                tl, tr = Hh[i, j], Hh[i, j + 1]
+                bl, br = Hh[i + 1, j], Hh[i + 1, j + 1]
+                bits = (int(bl - tl == 1), int(tr - tl == 1),
+                        int(br - bl == 1), int(br - tr == 1))
+                out.append(LEGAL.get(bits, "ILLEGAL"))
+        return collections.Counter(out)
+
+    def weight_of(counter):
+        if "ILLEGAL" in counter:
+            return 0.0
+        v = 1.0
+        for name, k in counter.items():
+            v *= w[name] ** k
+        return v
+
+    # find flip sites until every weight is visible at one of them
+    cases = []
+    covered = set()
+    for n in (2, 3):
+        for H0 in enumerate_height_functions(n):
+            if covered == set(w):
+                break
+            H0 = H0.astype(np.float64)
+            for i in range(1, n):
+                for j in range(1, n):
+                    nb = [H0[i - 1, j], H0[i + 1, j], H0[i, j - 1], H0[i, j + 1]]
+                    if len(set(nb)) != 1:
+                        continue
+                    nv = nb[0]
+                    up, down = H0.copy(), H0.copy()
+                    up[i, j] = nv + 1
+                    down[i, j] = nv - 1
+                    fu, fd = face_types(up, n), face_types(down, n)
+                    wu, wd = weight_of(fu), weight_of(fd)
+                    if wu <= 0 or wd <= 0:
+                        continue
+                    visible = {k for k in w if fu[k] != fd[k]}
+                    if not visible - covered:
+                        continue
+                    covered |= visible
+                    cases.append((n, i, j, H0.copy(), nv, wu / (wu + wd),
+                                  sorted(visible)))
+
+    assert covered == set(w), (
+        f"these flip sites only make {sorted(covered)} visible in the "
+        f"heat-bath threshold; {sorted(set(w) - covered)} would be unpinned, "
+        f"which is exactly how the n=2-only version of this test missed c1 "
+        f"and c2")
+    assert cases, "no usable flip site found"
+
+    for n, i, j, H0, nv, p_up, visible in cases:
+        tbl = _weight_table(w)
+        colour_idx, size = _colour_indices(n)
+        for eps, want in ((-1e-12, nv + 1), (+1e-12, nv - 1)):
+            rnd = np.full(H0.shape, 0.5)
+            rnd[i, j] = p_up + eps
+            out = _sweep(H0.copy(), tbl, rnd, colour_idx, size)
+            assert out[i, j] == want, (
+                f"n={n} site=({i},{j}) [pins {visible}]: with u = p_up "
+                f"{eps:+.0e} the site became {out[i, j]:.0f}, not {want:.0f}. "
+                f"p_up computed from the weights is {p_up:.12f}, so the "
+                f"weight table or the update disagrees with it")
+
