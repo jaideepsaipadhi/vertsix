@@ -1234,8 +1234,15 @@ def test_export_semantics_are_documented():
     readme = open(os.path.join(here, "..", "README.md")).read()
     html = open(os.path.join(here, "..", "static", "index.html")).read()
 
+    # Bound the window by the SECTION, not by a character count. A fixed
+    # 1200-character slice drifts with every edit above it: an insertion can
+    # push the sentence being looked for out of view (a spurious failure)
+    # and a deletion can pull unrelated text in (a silent pass). The same
+    # flaw, with a 1600-character slice, is documented on the island check
+    # below.
     exports = readme[readme.index("save PNG"):]
-    exports = exports[:1200]
+    _end = exports.find("\n## ")
+    exports = exports[:_end] if _end != -1 else exports
     assert "zoom" in exports and "crop" in exports.lower(), (
         "README does not warn that PNG export depends on zoom/pan state")
     assert "regardless of zoom" in exports, (
@@ -2326,7 +2333,21 @@ def test_experiment_observables_are_pinned():
         "the parity correction is gone; the raw height alternates inside the "
         "island, so its level is only constant after removing the checkerboard")
     # the lattice spacing is 2, so the centred variable is halved
-    assert "/ 2" in isl.split("def island")[1][:1600], (
+    # Read the function's BODY, not a fixed slice after its name. This was
+    # `isl.split("def island")[1][:1600]`, and adding a paragraph to the
+    # docstring pushed the line it looks for past 1600 characters, so the
+    # check failed on a documentation change and would equally have passed
+    # over a real one once the function grew. _js_function_body in this file
+    # carries the same warning for the JS side; it had not been applied here.
+    #
+    # The assertion itself was also weaker than it reads: it looked for the
+    # substring "/ 2", which appears in `(level - n / 2)` whatever happens
+    # to the outer division. Deleting that outer /2 -- exactly the fault
+    # described below -- left the test passing. Match the expression.
+    import re as _re
+    _isl_body = isl.split("def island")[1].split("\ndef ")[0]
+    assert _re.search(r"k\s*=\s*\(\s*level\s*-\s*n\s*/\s*2\s*\)\s*/\s*2",
+                      _isl_body), (
         "k must be (level - n/2)/2; neighbouring plateaus differ by 2, not 1")
 
 
@@ -2370,6 +2391,13 @@ def test_island_neighbour_ratio_is_stable_across_lattice_size():
     Unlike mu and sigma it needs only the two populated cells, and a discrete
     Gaussian with variance bounded in n predicts it does not drift with n.
     Measured at Delta=-3: 0.212 (n=16), 0.210 (n=24), 0.222 (n=32).
+
+    Scope: every n here is 0 mod 4, and that is load-bearing rather than
+    incidental. k is centred on n/2, so the secondary level sits below the
+    mode at that parity and above it at n = 2 (mod 4), where this same
+    estimator reads 0.000 instead of 0.21. The quantity that is genuinely
+    stable in n is the direction-agnostic secondary/dominant ratio -- see
+    test_the_island_level_ratio_is_stable_once_the_estimator_stops_picking_a_side.
     """
     from collections import Counter
 
@@ -2396,6 +2424,12 @@ def test_island_distribution_is_one_sided():
     P(+1)/P(0) ~ 1.5e-3 against P(-1)/P(0) ~ 0.21, a factor of ~140. Any
     change that symmetrises this has broken either the parity correction or
     the component selection.
+
+    Scope: at n = 32, which is 0 mod 4. The sidedness is a property of the
+    centring k = (level - n/2)/2, not of the island -- at n = 14, 18, 22 the
+    secondary level sits one step ABOVE the mode with the same ~0.2 weight,
+    so the distribution is one-sided the other way. Read this as a statement
+    about this n, not about all lattice sizes.
     """
     from collections import Counter
 
@@ -5779,3 +5813,105 @@ def test_the_documented_size_limits_are_the_enforced_ones():
               / "README.md").read_text()
     for value in ("250", "400", "160"):
         assert value in readme, f"the limit {value} is not documented"
+
+
+def test_the_domain_enumerators_reproduce_the_asm_numbers():
+    """Anchor the ORACLE, not just the sampler.
+
+    The general-domain tests in this file are judged against
+    experiments/brute_domain -- its enumerate_heights supplies the exact law
+    that the domain CFTP sampler is compared to. An error there would not
+    show up as a failure; it would quietly redefine what "correct" means for
+    every one of those tests, and they would keep passing.
+
+    The existing ASM check anchors ExactSampler.partition_function. This
+    anchors the oracle itself: on the full square a general-domain
+    enumerator must count alternating sign matrices, 1, 2, 7, 42, 429, 7436.
+
+    Both enumerators are checked. They share domains.FACE, so this does not
+    make them independent of a labelling error -- the five-table test covers
+    that -- but they walk the state space differently, one over height
+    functions and one over edge configurations, so an enumeration fault in
+    either shows up here as a disagreement with a published sequence.
+    """
+    from sixvertex.domains import domain_mask
+    from experiments.brute_domain import (enumerate_edge_configs,
+                                          enumerate_heights)
+
+    asm = {1: 1, 2: 2, 3: 7, 4: 42, 5: 429, 6: 7436}
+    for n, want in asm.items():
+        m = domain_mask([0, n], [0, n], [[1]])
+        got_h = len(enumerate_heights(m))
+        got_e = enumerate_edge_configs(m)
+        assert got_h == want, (
+            f"enumerate_heights counts {got_h} configurations on the {n}x{n} "
+            f"square; the ASM number is {want}. The domain tests judge the "
+            f"sampler against this enumerator, so they would not catch it")
+        assert got_e == want, (
+            f"enumerate_edge_configs counts {got_e} on the {n}x{n} square, "
+            f"expected the ASM number {want}")
+
+
+def test_the_island_level_ratio_is_stable_once_the_estimator_stops_picking_a_side():
+    """The island statistic is stable in n; the estimator was not.
+
+    Two claims in this file -- that P(mode-1)/P(mode) does not drift with n,
+    and that the island "sits one level low often and one level high almost
+    never" -- were measured at n = 16, 24 and 32. All three are 0 mod 4, and
+    that turns out to be the whole story.
+
+    k is centred on n/2, so its offset moves with n mod 4: integer at
+    n = 0 (mod 4), half-integer at n = 2 (mod 4), quarter-integer for odd n.
+    The distribution itself keeps the same shape everywhere -- a dominant
+    level and a secondary one spaced by 1 -- but the secondary sits BELOW
+    the mode when n = 0 (mod 4) and ABOVE it when n = 2 (mod 4). Asking for
+    mode-1 therefore reads the real ratio at one parity and essentially zero
+    at the other:
+
+        n       14     16     18     20     22     24     28
+        n%4      2      0      2      0      2      0      0
+        2nd/1st  .205   .270   .202   .238   .223   .253   .218
+        mode-1   .000   .270   .000   .238   .002   .253   .218
+
+    So the physics is stable and the one-sidedness is a property of the
+    centring convention, not of the island. This pins the direction-agnostic
+    ratio across BOTH parity classes, which is the form of the claim that
+    survives.
+    """
+    from collections import Counter
+
+    from sixvertex.cftp_exact import cftp_sample
+    from experiments.island import island
+    from experiments.mixing import weights_for_delta
+
+    w = weights_for_delta(-3.0)
+    agnostic, directional = {}, {}
+    for n in (14, 16, 18, 20):
+        ks = []
+        for s in range(260):
+            r = island(cftp_sample(n, w, master_seed=8_800_000 + s)[0], n)
+            if r["k"] is not None:
+                ks.append(r["k"])
+        c = Counter(ks)
+        order = sorted(c, key=c.get, reverse=True)
+        assert len(order) >= 2, f"n={n}: only one level populated, {c}"
+        agnostic[n] = c[order[1]] / c[order[0]]
+        directional[n] = c.get(order[0] - 1, 0) / c[order[0]]
+
+    for n, r in agnostic.items():
+        assert 0.10 < r < 0.40, (
+            f"n={n}: secondary/dominant ratio {r:.3f} outside the measured "
+            f"band; this is the quantity that should NOT depend on n")
+    spread = max(agnostic.values()) - min(agnostic.values())
+    assert spread < 0.15, f"the agnostic ratio drifted with n: {agnostic}"
+
+    # and the directional estimator must still show the parity split, since
+    # that is the thing being documented; if it ever stops, the centring has
+    # changed and the docstrings above need revisiting
+    for n in (14, 18):
+        assert directional[n] < 0.05, (
+            f"n={n} is 2 mod 4 but P(mode-1)/P(mode) = {directional[n]:.3f}; "
+            f"the k centring no longer behaves as documented")
+    for n in (16, 20):
+        assert directional[n] > 0.10, (
+            f"n={n} is 0 mod 4 but P(mode-1)/P(mode) = {directional[n]:.3f}")

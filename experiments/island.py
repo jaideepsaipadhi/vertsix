@@ -69,8 +69,26 @@ def corrected_height(H, n):
 def island(H, n, connectivity=8):
     """Locate the island and measure its height.
 
+    k is centred on n/2, and that centring is NOT comparable across n.
+    Levels are spaced by 2 in `level`, so k is spaced by 1, but its offset
+    depends on n mod 4: k is an integer only when n = 0 (mod 4), a half
+    integer when n = 2 (mod 4), and a quarter integer for odd n. Measured
+    supports at Delta = -3: {-1, 0} at n = 16, 20, 24; {-1.5, -0.5, 0.5} at
+    n = 14, 18; {-1.25, -0.25, 0.75} at n = 17.
+
+    The consequence is a trap for anything that asks about k-1 or k+1. The
+    distribution has a dominant level and a secondary one spaced by 1, with
+    the secondary at about 0.22 of the dominant at every n -- but the
+    secondary sits BELOW the mode when n = 0 (mod 4) and ABOVE it when
+    n = 2 (mod 4). So "the island sits one level low" is a statement about
+    this centring, not about the island: at n = 14, 18, 22 it sits one level
+    high just as often. A direction-agnostic secondary/dominant ratio is
+    stable across all of them (0.205, 0.270, 0.202, 0.238, 0.223, 0.253,
+    0.218 at n = 14, 16, 18, 20, 22, 24, 28); P(mode-1)/P(mode) reads the
+    same number at n = 0 (mod 4) and 0.000 at n = 2 (mod 4).
+
     Returns a dict with:
-      k              (level - n/2)/2, the centred integer height, or None
+      k              (level - n/2)/2, the centred height (see above), or None
       level          the modal parity-corrected height on the island
       size           faces in the island
       runner_up      faces in the next largest component
