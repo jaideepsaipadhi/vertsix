@@ -8998,3 +8998,98 @@ def test_the_extremal_height_refuses_a_kind_it_does_not_implement():
     assert len(res["threw"]) == 7, (
         f"the shipped extremalHeight accepted a kind it does not implement; "
         f"it threw only for {res['threw']}")
+
+
+def test_no_two_campaign_cells_anywhere_share_a_seed():
+    """Four seed collisions have gone into this project, every one found by
+    measuring rather than by reading, and three of them had the same shape: a
+    script drew one random stream for cells it then compared against each
+    other.
+
+    run_mixing.py (fixed, Delta axis correlated at rho = +0.248, p = 0.026),
+    run_asymptotics.py (fixed; there the correlation was not significant, so
+    the data survived), and run_island.py -- Experiment 2's main campaign --
+    which passed `master_seed=s` with s the bare loop index, so every
+    (n, Delta) cell drew seeds 0..samples-1. Measured on k at n=24, 250
+    samples:
+
+        Delta -3 vs -4, shared seeds      r = +0.399
+        Delta -2 vs -3, shared seeds      r = +0.180
+        Delta -2 vs -3, disjoint seeds    r = -0.075    (SE ~ 0.063)
+
+    The fourth was different and is the reason this test exists at all.
+    cftp_stopping.py built 7_000_000 + n*1000 + s, omitting Delta, AND that
+    base collided with run_asymptotics at n=16, |Delta|=4 -- both land on
+    7_016_000, both call forward_coalescence_time, so the two campaigns
+    published the same five numbers, [155, 165, 307, 336, 294].
+    run_asymptotics' own comment said its blocks "are made disjoint anyway",
+    which was true of its own cells and blind to the other script. An
+    in-script check cannot see that; only a global one can.
+
+    So this enumerates the REAL blocks of every campaign script over its
+    default grid and asserts pairwise disjointness across all of them. It
+    works on block membership, not on spans: the legacy scripts' spans
+    interleave even though their blocks do not, so a span-based check would
+    report collisions that are not there -- which is why the registry in
+    experiments/seeds.py places new allocations above every legacy footprint
+    instead of trying to describe them.
+    """
+    import itertools
+
+    from experiments.run_mixing import seed_block as mixing_block
+    from experiments.seeds import seed_block
+
+    NS_I = [16, 24, 32, 48, 64]
+    NS_S = [8, 12, 16, 24, 32]
+    DS = [0.5, 0.25, 0.0, -0.25, -0.5, -0.75, -1.0, -1.5, -2.0, -3.0, -4.0, -5.0]
+    COUNT = 200
+
+    blocks = {}
+
+    # allocated through the shared registry
+    for n in NS_I:
+        for d in DS:
+            blocks[("run_island", n, d)] = set(seed_block("run_island", n, d, COUNT))
+    for n in NS_S:
+        for d in DS:
+            blocks[("cftp_stopping", n, d)] = set(
+                seed_block("cftp_stopping", n, d, COUNT))
+
+    # legacy footprints, computed with each script's own formula
+    for n in [16, 24, 32, 40]:
+        for d in DS:
+            blocks[("run_mixing", n, d)] = set(mixing_block(n, d, COUNT))
+    for n in NS_I:
+        for d in DS:
+            blocks[("run_asymptotics", n, d)] = set(
+                seed_block("run_asymptotics", n, d, COUNT))
+    for idx in range(16):
+        base = 1_000_000 + idx * 10_000_000
+        blocks[("run_shift", idx, 0.0)] = set(range(base, base + COUNT))
+    blocks[("island_exists", 0, 0.0)] = {31_000 + 97 * s for s in range(COUNT)}
+    blocks[("island_order", 0, 0.0)] = {51_000 + 97 * s for s in range(COUNT)}
+    for b in (770_000, 880_000, 990_000, 1_010_000):
+        blocks[("validate", b, 0.0)] = set(range(b, b + COUNT))
+
+    assert len(blocks) >= 200, len(blocks)
+
+    overlaps = []
+    for a, b in itertools.combinations(sorted(blocks), 2):
+        shared = blocks[a] & blocks[b]
+        if shared:
+            overlaps.append(
+                f"{a} and {b} share {len(shared)} seeds "
+                f"(e.g. {sorted(shared)[0]})")
+    assert not overlaps, (
+        f"{len(overlaps)} colliding cell pair(s); cells drawn from one random "
+        f"stream are not independent evidence about each other: "
+        + "; ".join(overlaps[:6]))
+
+    # and the registry must actually be separating cells, not handing out one
+    # block -- without this the test above passes on a constant allocator
+    # only because every cell maps to the same set and sets do not "overlap"
+    # with themselves in a combinations() pass... they do, so check anyway
+    distinct = {frozenset(v) for k, v in blocks.items() if k[0] == "run_island"}
+    assert len(distinct) == len(NS_I) * len(DS), (
+        f"run_island's allocator produced {len(distinct)} distinct blocks for "
+        f"{len(NS_I) * len(DS)} cells")

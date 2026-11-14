@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import sixvertex.cftp_exact as ce
 from sixvertex.cftp_exact import cftp_sample
 from experiments.island import discrete_gaussian_fit, island
+from experiments.seeds import seed_block
 from experiments.mixing import weights_for_delta
 
 
@@ -66,7 +67,13 @@ def main():
             for d in args.deltas:
                 w = weights_for_delta(d)
                 ks, amb = [], 0
-                for s in range(args.samples):
+                # master_seed=s -- the bare loop index -- gave EVERY
+                # (n, Delta) cell the same seeds 0..samples-1, so the cells
+                # this campaign compares against each other were drawn from
+                # one random stream. Measured on k at n=24, 250 samples:
+                # r = +0.399 between Delta=-3 and -4, +0.180 between -2 and
+                # -3, against -0.075 on disjoint seeds. See experiments/seeds.
+                for s in seed_block("run_island", n, d, args.samples):
                     H, _ = cftp_sample(n, w, master_seed=s)
                     r = island(H, n)
                     a = int(r["separation"] < args.min_separation)

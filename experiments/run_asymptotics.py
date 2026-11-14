@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import sixvertex.cftp_exact as ce
 from experiments.mixing import forward_coalescence_time, weights_for_delta
+from experiments.seeds import seed_block
 
 
 def boot_median(x, reps=2000, seed=0):
@@ -81,9 +82,15 @@ def main():
                 # overlap did not in fact correlate the coalescence times and
                 # asym_sample.csv is not in question. The blocks are made
                 # disjoint anyway, so the comment is true of the code.
-                base = 3_000_000 + int(abs(d) * 1000) * 1000 + 1000 * n
-                for s in range(args.seeds):
-                    t = forward_coalescence_time(n, w, seed=base + s,
+                # ... and the replacement was keyed on int(abs(d)*1000),
+                # which collides Delta = +0.5 with -0.5 and +0.25 with -0.25
+                # -- the very mistake the comment above describes having been
+                # fixed in run_mixing. The default grid is [-4.0, -1.0], both
+                # negative, so nothing measured was affected; it was reachable
+                # rather than reached. Allocation moved to experiments/seeds,
+                # which keys on SIGNED Delta and is checked globally.
+                for s in seed_block("run_asymptotics", n, d, args.seeds):
+                    t = forward_coalescence_time(n, w, seed=s,
                                                  max_sweeps=args.max_sweeps)
                     if t is None:
                         cens += 1

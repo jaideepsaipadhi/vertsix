@@ -47,6 +47,7 @@ import sixvertex.cftp_exact as ce
 from sixvertex.cftp_exact import (_colour_indices, _rand_field, _weight_table,
                                   extremal_height, in_monotone_region)
 from experiments.mixing import forward_coalescence_time, weights_for_delta
+from experiments.seeds import seed_block
 
 
 def _coalesces_from(n, w, seed, T, tbl, colour_idx, size):
@@ -133,8 +134,13 @@ def main():
             for d in args.deltas:
                 w = weights_for_delta(d)
                 star, fwd, cens = [], [], 0
-                for s in range(args.seeds):
-                    base = 7_000_000 + n * 1000 + s
+                # base = 7_000_000 + n*1000 + s omitted Delta, so every
+                # Delta at fixed n drew the same seeds -- and it collided
+                # with run_asymptotics at n=16, |Delta|=4, where both land on
+                # 7_016_000 and both call forward_coalescence_time, so the
+                # two campaigns published the same numbers
+                # ([155, 165, 307, 336, 294]). See experiments/seeds.
+                for base in seed_block("cftp_stopping", n, d, args.seeds):
                     t = cftp_stopping_time(n, w, base)
                     if t is None:
                         cens += 1
