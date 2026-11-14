@@ -2557,11 +2557,25 @@ def test_two_independent_enumerators_agree_on_general_domains():
 
     The height route goes through boundary propagation and the height
     convention; the edge route assigns 0/1 to lattice edges and only checks
-    each cell against the six legal vertices. They disagreed once -- the
-    height enumerator visited corners in row-major order and guessed a value
-    at corners with no fixed neighbour yet, over-counting 5 configurations as
-    2604. A square never exposes that, which is why the check runs on
-    staircases too.
+    each cell against the six legal vertices.
+
+    This used to be five hand-picked domains, all of them non-empty, and the
+    claim that the two agree was false. The height enumerator checked a face
+    only when a FREE corner of it was assigned, so a face whose four corners
+    are all boundary-fixed was never checked at all -- and 150 of 250 domains
+    in the 3x3 family have such a face. On 23 of those 250 it reported 1 or 2
+    configurations for domains that have NONE, always in that direction. Five
+    non-empty examples could not see it.
+
+    So the sweep is the test now: every domain reachable from a 3x3 convex
+    array on five cut sets. The ASM numbers are kept as an absolute anchor,
+    since two enumerators agreeing on a wrong answer is the failure mode a
+    cross-check alone cannot catch.
+
+    They also disagreed once before, in the other direction -- the height
+    enumerator visited corners in row-major order and guessed a value at
+    corners with no fixed neighbour yet, over-counting 5 configurations as
+    2604. A square exposes neither bug, which is why the sweep is general.
     """
     from sixvertex.domains import domain_mask
     from experiments.brute_domain import (enumerate_edge_configs,
@@ -2579,6 +2593,57 @@ def test_two_independent_enumerators_agree_on_general_domains():
         assert e == h, (X, Y, I, e, h)
         if expected is not None:
             assert e == expected, (X, Y, I, e, expected)
+
+    # the ASM anchor: both routes against a known sequence, not just each other
+    asm = [1, 2, 7, 42, 429]
+    for n, want in enumerate(asm, start=1):
+        m = domain_mask([0, n], [0, n], [[1]])
+        assert len(enumerate_heights(m)) == want, n
+        assert enumerate_edge_configs(m) == want, n
+
+    # and the sweep, including the empty domains the old cases never reached
+    import itertools
+
+    from sixvertex.domains import DomainError
+
+    cutsets = [[0, 1, 2, 3], [0, 1, 2, 4], [0, 1, 3, 4], [0, 2, 3, 4],
+               [0, 2, 4, 6]]
+    compared = empties = 0
+    for bits in itertools.product([0, 1], repeat=9):
+        I = np.array(bits).reshape(3, 3)
+        if I.sum() == 0:
+            continue
+        for X in cutsets:
+            for Y in cutsets:
+                try:
+                    m = domain_mask(X, Y, I)
+                except DomainError:
+                    continue
+                try:
+                    h = len(enumerate_heights(m))
+                except (RuntimeError, DomainError):
+                    continue          # disconnected corner graph, or cap
+                e = enumerate_edge_configs(m)
+                compared += 1
+                empties += (e == 0)
+                assert h == e, (
+                    f"the two enumerators disagree on X={X}, Y={Y}, "
+                    f"I={I.tolist()}: heights {h}, edges {e}")
+    # the edge route's own assumption: contiguous rows and columns, which is
+    # what its entry/exit edges rest on. True of every mask domain_mask can
+    # build, and now refused rather than silently miscounted if it is not.
+    import pytest
+
+    gap = np.zeros((4, 4), dtype=bool)
+    gap[0, 0] = gap[0, 3] = True
+    gap[1, :] = True
+    with pytest.raises(ValueError, match="not contiguous"):
+        enumerate_edge_configs(gap)
+
+    assert (compared, empties) == (874, 244), (
+        f"the sweep census moved to {(compared, empties)}; it covers 874 "
+        f"domains of which 244 are empty, and the bug this test was rewritten "
+        f"for only shows on the empty ones")
 
 
 def test_convexity_of_I_does_not_imply_the_domain_is_nonempty():

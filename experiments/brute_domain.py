@@ -82,6 +82,21 @@ def enumerate_heights(mask, cap=2_000_000):
     fixed = known.copy()
     out = []
 
+    all_faces = [(a, b) for a in range(N) for b in range(N) if mask[a, b]]
+
+    # Faces whose FOUR corners are all boundary-fixed are never visited by the
+    # incremental check below, because that only looks at faces adjacent to a
+    # free corner as it is assigned. On domains that have such faces -- 150 of
+    # 250 in the 3x3 family -- an illegal one was therefore never noticed, and
+    # this enumerator reported 1 or 2 configurations for domains that have
+    # NONE: 23 of those 250 disagreed with enumerate_edge_configs, always in
+    # that direction. Those faces are decided entirely by the boundary, so
+    # they are checked once, up front.
+    for (a, b) in all_faces:
+        if all(known[a + da, b + db] for da in (0, 1) for db in (0, 1)):
+            if face_bits(H, a, b) not in FACE:
+                return []
+
     def faces_ready(i, j):
         """Domain faces all of whose corners are now fixed."""
         for (a, b) in ((i - 1, j - 1), (i - 1, j), (i, j - 1), (i, j)):
@@ -93,7 +108,19 @@ def enumerate_heights(mask, cap=2_000_000):
         if len(out) >= cap:
             raise RuntimeError("enumeration cap hit; use a smaller domain")
         if k == len(pts):
-            out.append(H.copy())
+            # Belt as well as braces: an oracle should certify what it
+            # returns, so every domain face is checked once more here rather
+            # than trusting that the incremental check covered them all.
+            #
+            # Honestly labelled: this is defensive and NOT what repaired the
+            # counts. Removing it while keeping the up-front check above
+            # leaves the 874-domain cross-check green (and about 30% faster),
+            # so no domain in that sweep reaches here holding an illegal face.
+            # It is kept because this function is the ground truth the rest of
+            # the repository is checked against, and an oracle that certifies
+            # its own output is worth more than a fast one.
+            if all(face_bits(H, a, b) in FACE for (a, b) in all_faces):
+                out.append(H.copy())
             return
         i, j = pts[k]
         anchor = next((H[a, b] for (a, b) in nbrs(i, j) if fixed[a, b]), None)
@@ -144,10 +171,34 @@ def enumerate_edge_configs(mask, cap=5_000_000):
     """
     N = mask.shape[0]
     rows, cols = [], []
+    # The row/column spans below assume each row and column of the domain is
+    # CONTIGUOUS: a path enters at the first cell and leaves after the last,
+    # with nothing in between. domain_mask enforces convexity of I, and that
+    # holds across all 1078 masks of the 3x3 family (checked), but a
+    # hand-built mask would break it silently -- the entry and exit edges
+    # would be set across a gap and the count would be wrong rather than
+    # refused. Stated where it is relied on.
     for i in range(N):
-        w = np.flatnonzero(mask[i]); rows.append((int(w[0]), int(w[-1])))
+        w = np.flatnonzero(mask[i])
+        if w.size:
+            if w.size != int(w[-1]) - int(w[0]) + 1:
+                raise ValueError(
+                    f"row {i} of the domain is not contiguous ({w.tolist()}); "
+                    f"this enumerator's entry/exit edges assume it is")
+            rows.append((int(w[0]), int(w[-1])))
+        else:
+            rows.append((0, -1))
     for j in range(N):
-        w = np.flatnonzero(mask[:, j]); cols.append((int(w[0]), int(w[-1])))
+        w = np.flatnonzero(mask[:, j])
+        if w.size:
+            if w.size != int(w[-1]) - int(w[0]) + 1:
+                raise ValueError(
+                    f"column {j} of the domain is not contiguous "
+                    f"({w.tolist()}); this enumerator's entry/exit edges "
+                    f"assume it is")
+            cols.append((int(w[0]), int(w[-1])))
+        else:
+            cols.append((0, -1))
 
     V = np.full((N, N + 1), -1, dtype=np.int8)      # -1 = free
     Hh = np.full((N + 1, N), -1, dtype=np.int8)
