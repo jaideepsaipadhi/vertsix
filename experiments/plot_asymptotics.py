@@ -17,11 +17,19 @@ failing rather than the model. Running the identical pipeline at Delta=-1,
 where the exponent is known to be flat, tests that. Recomputed from the CSV
 shipped beside this script by local_exponent_trend() below:
 
-    Delta = -1     +0.69 +- 0.46,  p = 0.133    line fit chi2 4.31/3, p = 0.23
-    Delta = -4     +3.49 +- 1.27,  p = 0.0060   line fit chi2 1.59/3, p = 0.66
+    Delta = -1     -0.56 +- 0.61,  p = 0.355    line fit chi2 2.71/3, p = 0.44
+    Delta = -4     +3.10 +- 1.06,  p = 0.0036   line fit chi2 3.01/3, p = 0.39
 
-The control is flat and Delta=-4 trends up about five times as steeply, at
-p = 0.006. The second column is what licenses reading the first: each local
+The control does not trend -- its slope is slightly NEGATIVE and nowhere near
+significant -- while Delta=-4 rises at p = 0.0036.
+
+These are measured on seeds allocated through experiments/seeds.py. The
+previous CSV used a base of its own, so regenerating on the new allocation is
+an independent redraw of the whole campaign rather than a reformatting of it:
+Delta=-4 went from +3.49 +- 1.27 (p = 0.0060) to +3.10 +- 1.06 (p = 0.0036)
+and the control from +0.69 +- 0.46 (p = 0.133) to -0.56 +- 0.61 (p = 0.355).
+The conclusion reproduces and sharpens on both sides, which is the outcome
+this figure needed and had never been given. The second column is what licenses reading the first: each local
 exponent carries a standard error propagated from the CSV's bootstrap
 intervals, and the fitted line's chi-square says the scatter about it is
 consistent with those errors at both Delta. If it were not, the quoted
