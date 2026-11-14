@@ -69,8 +69,15 @@ class SixVertexSampler:
             return torch.from_numpy(H).to(self.device)
         return H
 
-    def is_symmetric_regime(self) -> bool:
-        return self.a1 == 1.0 and self.a2 == 1.0 and self.b1 == 1.0 and self.b2 == 1.0
+    # is_symmetric_regime() was removed here, not merely stopped being
+    # reported. It returned a1 == a2 == b1 == b2 == 1 -- the superseded CFTP
+    # criterion, which ignores c1 and c2 entirely and corresponds to no
+    # decision this package makes. The server stopped sending it and the
+    # suite guards the API surface against its return, but the method stayed
+    # PUBLIC on this class with no docstring and no callers, so anyone using
+    # the library directly could still ask it and get the wrong criterion
+    # back as a verdict. The condition that governs exact sampling is
+    # in_monotone_region(weights): c1c2 >= a1a2 and c1c2 >= b1b2.
 
     def step(self, sweeps: int = 1):
         if self.use_torch:

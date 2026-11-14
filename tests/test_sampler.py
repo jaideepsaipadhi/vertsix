@@ -381,23 +381,74 @@ def test_api_gating_matches_server_routing():
             f"but server routes to {server_routes_to(n, w)}")
 
 
-def test_no_stale_symmetric_regime_field():
-    """The flag tested a1=a2=b1=b2=1 -- the superseded CFTP criterion, which
-    ignored c1,c2 and matched no decision the server makes. It must not
-    reappear on the API surface."""
-    import os
-    here = os.path.dirname(__file__)
-    src = open(os.path.join(here, "..", "server.py")).read()
-    # A mention in the explanatory comment is fine; use as a response KEY
-    # (i.e. followed by a colon, as in a dict literal) is what must not return.
-    import re
-    lines = [ln for ln in src.splitlines()
-             if not ln.strip().startswith("#")]
-    offenders = [ln for ln in lines
-                 if re.search(r'["\']is_symmetric_regime["\']\s*:', ln)
-                 or re.search(r'response\s*\[\s*["\']is_symmetric_regime', ln)]
+def test_no_stale_symmetric_regime_anywhere():
+    """The flag returned a1 = a2 = b1 = b2 = 1 -- the superseded CFTP
+    criterion, which ignores c1 and c2 entirely and matches no decision this
+    package makes. The governing condition is in_monotone_region: c1c2 >= a1a2
+    and c1c2 >= b1b2.
+
+    This check used to look at server.py alone, and at response keys only,
+    and that was half a retirement. The server stopped SENDING the flag, but
+    SixVertexSampler.is_symmetric_regime stayed a public method -- no
+    docstring, no callers, and the wrong criterion still behind it -- so
+    anyone using the library rather than the web app could ask it and be
+    answered. It is deleted now, and the check is widened to match: the name
+    may appear nowhere in the repository except in prose that explains why it
+    is gone.
+
+    "Prose" means a comment line or a line inside a docstring, the latter
+    being why this test can name it at all. Code is everything else, so a
+    definition, a call, an attribute access or a dict key all fail. The
+    docstring-line set is collected by walking the AST rather than guessed
+    from quote characters.
+
+    tests/ is excluded from the scan, and that exclusion is not a loophole --
+    it is forced. A test that asserts the flag is ABSENT from an API response
+    has to name it in code to do so, and one here does; the first draft of
+    this check flagged that line, correctly by its own rule and wrongly by
+    intent. The scan therefore covers what ships: sixvertex/, server.py,
+    experiments/, and the static JS and HTML. The hasattr assertion at the
+    end is what actually pins the method's removal, and no exclusion touches
+    it.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    flag = "is_symmetric" + "_regime"      # split so this line is not a hit
+
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        if path.resolve().parent == (root / "tests").resolve():
+            continue
+        text = path.read_text()
+        if flag not in text:
+            continue
+        prose = set()
+        for node in ast.walk(ast.parse(text)):
+            if (isinstance(node, ast.Expr)
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)):
+                prose.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if flag not in line or lineno in prose or line.lstrip().startswith("#"):
+                continue
+            offenders.append(f"{path.relative_to(root)}:{lineno} {line.strip()}")
+
+    for path in sorted(root.rglob("*.js")) + sorted(root.rglob("*.html")):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if flag in line and not line.lstrip().startswith(("//", "*", "<!--")):
+                offenders.append(f"{path.relative_to(root)}:{lineno} {line.strip()}")
+
     assert not offenders, (
-        f"is_symmetric_regime resurfaced as an API response field: {offenders}")
+        f"the superseded {flag} criterion is still live code, not only a "
+        f"retired name: " + "; ".join(offenders))
+
+    # and the method really is off the class, not merely unreferenced
+    from sixvertex.sampler import SixVertexSampler
+    assert not hasattr(SixVertexSampler, flag), (
+        f"SixVertexSampler.{flag} is still callable; the server not sending "
+        f"it is not the same as the library not offering it")
 
 
 def test_running_jobs_are_not_expired():
