@@ -5915,3 +5915,65 @@ def test_the_island_level_ratio_is_stable_once_the_estimator_stops_picking_a_sid
     for n in (16, 20):
         assert directional[n] > 0.10, (
             f"n={n} is 0 mod 4 but P(mode-1)/P(mode) = {directional[n]:.3f}")
+
+
+def test_the_theta_floor_reaches_further_than_delta_minus_one():
+    """The exponent's trustworthy range was stated one or two steps too wide.
+
+    plot_island_order.py rejects Delta = -0.5 and -0.75 as floor effects --
+    the largest solid component is a handful of faces, so A cannot decay
+    further and the fitted exponent measures the floor rather than the
+    physics -- and then says "only the points from Delta = -1 downwards,
+    where the core is tens to hundreds of faces, carry a meaningful
+    exponent".
+
+    Measured core sizes in faces, at the three sizes the fit uses:
+
+        Delta      N=32    N=48    N=64
+        -0.75       7.9    12.7    14.9     <- dismissed as floor
+        -1.00       9.5    16.4    20.0     <- claimed meaningful
+        -1.50      19.2    31.5    52.9
+        -3.00      57.4   118.0   199.8
+
+    Delta = -1 is 20 faces at N = 64 against 14.9 at -0.75: the same order as
+    the point being rejected, and nowhere near "tens to hundreds". So the
+    meaningful range starts nearer -1.5.
+
+    This matters because -1 is exactly where a transition would be claimed,
+    so the weakest point in the fit sits on the most interesting Delta. The
+    check runs at N = 32, where the effect is clearest and the sampling is
+    cheap; the larger sizes are in the table above rather than in the loop.
+    """
+    import numpy as np
+
+    from sixvertex.cftp_exact import cftp_sample
+    from experiments.island_order import core_area_fraction
+    from experiments.mixing import weights_for_delta
+
+    n = 32
+    faces = {}
+    for d in (-0.75, -1.0, -1.5):
+        w = weights_for_delta(d)
+        v = [core_area_fraction(cftp_sample(n, w, master_seed=6_100_000 + s)[0], n)
+             * n * n for s in range(50)]
+        faces[d] = float(np.mean(v))
+
+    assert faces[-0.75] < 15, faces
+    assert faces[-1.0] < 20, (
+        f"Delta=-1 now has a core of {faces[-1.0]:.1f} faces at N={n}; if it "
+        f"has genuinely reached 'tens to hundreds' the caveat can be relaxed")
+    assert faces[-1.0] < 2.5 * faces[-0.75], (
+        f"Delta=-1 ({faces[-1.0]:.1f} faces) is supposed to be the same order "
+        f"as the rejected Delta=-0.75 ({faces[-0.75]:.1f}); that is the whole "
+        f"point of narrowing the trustworthy range")
+    assert faces[-1.5] > 1.5 * faces[-1.0], (
+        f"Delta=-1.5 ({faces[-1.5]:.1f}) is no longer clearly above Delta=-1 "
+        f"({faces[-1.0]:.1f}), so the suggested cutoff needs revisiting")
+
+    # and the document must not still advertise the old cutoff
+    import pathlib
+    doc = (pathlib.Path(__file__).resolve().parent.parent / "experiments"
+           / "plot_island_order.py").read_text(encoding="utf-8")
+    assert "meaningful range starts around" in doc, (
+        "plot_island_order.py no longer records where the exponent becomes "
+        "trustworthy")

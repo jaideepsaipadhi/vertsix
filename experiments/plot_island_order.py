@@ -27,10 +27,32 @@ the 1.15 at Delta = -0.75, which breaks the monotone trend. That is a floor
 effect, not structure. At Delta = -0.5 the largest solid component is 13
 faces at N = 64 and 14 at N = 48 -- a handful of cells, the smallest object
 the erosion can leave behind -- so A cannot decay any further and the fitted
-exponent is measuring the floor rather than the physics. The same caution
-applies to Delta = -0.75 at 14 faces. Only the points from Delta = -1
-downwards, where the core is tens to hundreds of faces, carry a meaningful
-exponent.
+exponent is measuring the floor rather than the physics.
+
+That caution reaches further than this paragraph used to admit. It said the
+floor applied to Delta = -0.5 and -0.75, and that "only the points from
+Delta = -1 downwards, where the core is tens to hundreds of faces, carry a
+meaningful exponent". Measured core sizes, in faces, at the three sizes the
+fit uses (80 samples at N = 32, 48; 40 at N = 64):
+
+    Delta      N=32    N=48    N=64
+    -0.75       7.9    12.7    14.9     <- dismissed as floor
+    -1.00       9.5    16.4    20.0     <- claimed meaningful
+    -1.25      14.3    21.1       -
+    -1.50      19.2    31.5    52.9
+    -2.00         -    50.7    77.0
+    -3.00      57.4   118.0   199.8
+
+Delta = -1 is 20 faces at N = 64 against 14.9 at Delta = -0.75 -- the same
+order as the point being rejected, and nowhere near "tens to hundreds". By
+this document's own criterion the meaningful range starts around
+Delta = -1.5, not -1. Quote the exponent only from there down, and prefer
+to state the cutoff by CORE SIZE rather than by Delta, since the floor is a
+property of how many faces survive the erosion.
+
+One further caution at Delta = -1.5: mean 52.9 against median 32.5 at
+N = 64, so that point is skewed by occasional large cores and its mean-based
+A is noisier than the others.
 """
 from __future__ import annotations
 
