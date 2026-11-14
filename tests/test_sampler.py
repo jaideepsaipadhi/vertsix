@@ -1822,9 +1822,11 @@ def test_stochastic_model_is_reachable_and_height_function_is_valid():
 
     Its height_function was also wrong: a double cumulative sum giving steps of
     8 rather than 1. Nothing called it, which is exactly why the error
-    survived. The correct one counts horizontal arrows crossing column j in
-    rows above i: vertically the step is h[i,j] in {0,1}, and horizontally the
-    sum telescopes through arrow conservation to v[0,j] - v[i,j].
+    survived. The correct one counts horizontal arrows entering column j in the
+    rows BELOW i -- rows 0..i-1 with row 0 the bottom; this docstring and the
+    module's said "above", the opposite. Vertically the step is h[i,j] in
+    {0,1}, never -1, and horizontally the sum telescopes through arrow
+    conservation to v[0,j] - v[i,j], so it lies in {-1,0,1}.
     """
     import os, importlib
     from sixvertex import stochastic as st
@@ -1835,7 +1837,18 @@ def test_stochastic_model_is_reachable_and_height_function_is_valid():
         H = st.height_function(h, v)
         assert H.shape == (n + 1, n + 1)
         assert np.abs(np.diff(H, axis=1)).max() <= 1, "horizontal step > 1"
-        assert np.abs(np.diff(H, axis=0)).max() <= 1, "vertical step > 1"
+        # the vertical step is h[i,j], so 0 or 1 -- never -1. |diff| <= 1 alone
+        # would pass a height function that decreased going up.
+        dv = np.diff(H, axis=0)
+        assert set(np.unique(dv).tolist()) <= {0, 1}, (
+            f"vertical steps are {sorted(set(np.unique(dv).tolist()))}, "
+            f"but H(i+1,j) - H(i,j) = h[i,j] must be 0 or 1")
+        assert np.array_equal(dv, h), (
+            "the vertical step is not h[i,j] itself")
+        # and it counts the rows BELOW i, not above
+        assert np.array_equal(H[1:, :], np.cumsum(h, axis=0)), (
+            "H is not the cumulative count of arrows in the lower rows")
+        assert H[0, :].max() == 0, "row 0 should carry no accumulated arrows"
 
     # reachable from the server
     server = importlib.import_module("server")
@@ -6453,3 +6466,177 @@ def test_the_shift_figure_quotes_the_p_values_its_own_sample_gives():
     # the claim that survives: both reject constancy, the slope more sharply
     assert p_const < 0.05 and p_slope < 0.05, (p_const, p_slope)
     assert p_slope < p_const, "the slope is no longer the sharper instrument"
+
+
+def test_the_legacy_cftp_is_correct_at_exactly_one_weight_point():
+    """sixvertex/cftp.py claimed correctness for ARBITRARY c1, c2.
+
+    Its comment read "this proven-safe regime allows a=b=1 with ARBITRARY c1,
+    c2 -- including deep ferroelectric/antiferroelectric weights (|Delta|>1).
+    CFTP remains exactly correct there", citing as verification that it
+    "coalesces correctly" at c1=c2=sqrt(8). Coalescing is not sampling the
+    right measure.
+
+    p_up = c_up/(c_up+c_down) is the only place the weights enter, so at
+    c1 = c2 it is 1/2 for every c and the chain returns the UNIFORM measure
+    whatever it was asked for. At c1 != c2 it returns neither the requested
+    measure nor the uniform one. Correct at c1 = c2 = 1 and nowhere else --
+    pinned here in total variation, because a comment claiming otherwise would
+    license using this module for antiferroelectric sampling.
+    """
+    import numpy as np
+
+    from sixvertex.cftp import cftp_sample
+
+    n, N = 4, 4000
+    cfgs = enumerate_height_functions(n)
+    keys = {c.astype(np.int64).tobytes(): i for i, c in enumerate(cfgs)}
+    _c, unif, _z = exact_distribution(
+        n, dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=1.0))
+
+    def empirical(c1, c2):
+        counts = np.zeros(len(cfgs))
+        for s in range(N):
+            H, _ = cftp_sample(n=n, c_up=c1, c_down=c2, master_seed=s)
+            counts[keys[np.asarray(H, dtype=np.int64).tobytes()]] += 1
+        return counts / counts.sum()
+
+    def tv(p, q):
+        return 0.5 * float(np.abs(np.asarray(p) - np.asarray(q)).sum())
+
+    noise = 0.05  # total-variation sampling error at N=4000 over 42 cells
+
+    # (a) exact at the uniform point
+    e11 = empirical(1.0, 1.0)
+    assert tv(e11, unif) < noise, tv(e11, unif)
+
+    # (b) at c1 = c2 != 1 it returns the UNIFORM measure, not the one asked for
+    for c in (2.0, 0.5):
+        emp = empirical(c, c)
+        _c2, want, _z2 = exact_distribution(
+            n, dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=c, c2=c))
+        assert tv(emp, unif) < noise, (
+            f"at c1=c2={c} the legacy chain no longer returns the uniform "
+            f"measure (TV {tv(emp, unif):.4f}); p_up must have stopped being "
+            f"1/2, which would change what this module is")
+        assert tv(emp, want) > 0.2, (
+            f"at c1=c2={c} the legacy chain now matches the measure it was "
+            f"asked for (TV {tv(emp, want):.4f}) -- if that is real, the "
+            f"module comment needs rewriting in the other direction")
+
+    # (c) at c1 != c2 it matches neither
+    emp = empirical(1.0, 2.0)
+    _c3, want, _z3 = exact_distribution(
+        n, dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=2.0))
+    assert tv(emp, want) > 0.4 and tv(emp, unif) > 0.4, (
+        tv(emp, want), tv(emp, unif))
+
+    # and nothing in the product routes to it: the general cftp_sample is the
+    # one the package exports, and server.py's import of this module (which
+    # shadowed that name) is gone.
+    import pathlib
+
+    import sixvertex
+
+    from sixvertex.cftp_exact import cftp_sample as general
+
+    assert sixvertex.cftp_sample is general, (
+        "sixvertex.cftp_sample is no longer the general sampler")
+    server_src = (pathlib.Path(__file__).resolve().parent.parent
+                  / "server.py").read_text(encoding="utf-8")
+    assert "from sixvertex.cftp import" not in server_src, (
+        "server.py imports the legacy a=b=1 CFTP again, shadowing the general "
+        "cftp_sample by name")
+
+
+def test_every_label_table_in_the_package_is_discovered_and_agrees():
+    """The hand-written census missed sixvertex/sampler.py -- both copies.
+
+    test_all_five_vertex_label_tables_agree enumerates five tables by name.
+    There are seven in the Python package alone: sampler.py's
+    _classify_face_np and _classify_face_torch were never in the list, and both
+    had b1 and b2 the wrong way round -- (0,1,1,0) labelled b1 where every
+    other table calls it b2 -- which is the same miss that left
+    static/sixvertex.js wrong, in the LIVE MCMC path this time.
+
+    Nothing observable changed (under DWBC #b1 = #b2, so the swap multiplies
+    every weight by 1, and this class exposes weights rather than labels), but
+    a hand-list is the wrong instrument for a census: it cannot report what it
+    does not know about. This finds the tables by introspection instead, so a
+    new copy following the naming convention is probed automatically and a
+    rename that shrinks the census fails the count.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+    import re
+
+    import numpy as np
+
+    import sixvertex
+    from sixvertex.domains import FACE
+
+    PAT = re.compile(r"(classify_face|face_weight|weight_table)")
+    found = []
+    for m in pkgutil.iter_modules(sixvertex.__path__):
+        mod = importlib.import_module(f"sixvertex.{m.name}")
+        for name, obj in vars(mod).items():
+            if PAT.search(name) and callable(obj):
+                found.append((f"{mod.__name__}.{name}", obj, None))
+            if inspect.isclass(obj) and obj.__module__ == mod.__name__:
+                for mn, mo in vars(obj).items():
+                    if PAT.search(mn) and callable(mo):
+                        found.append((f"{mod.__name__}.{obj.__name__}.{mn}",
+                                      mo, obj))
+
+    assert len(found) >= 7, (
+        f"the census shrank to {len(found)} tables: {[f[0] for f in found]}. "
+        f"A table was renamed out of the convention, which hides it.")
+
+    w = {"a1": 2.0, "a2": 3.0, "b1": 5.0, "b2": 7.0, "c1": 11.0, "c2": 13.0}
+    by_value = {v: k for k, v in w.items()}
+    bits = sorted(FACE)
+
+    def corners(l, t, b, r):
+        tl = 0
+        bl, tr = tl + l, tl + t
+        br = bl + b
+        assert br - tr == r
+        return tl, tr, bl, br
+
+    checked = 0
+    for label, fn, cls in found:
+        params = list(inspect.signature(fn).parameters)
+        for (l, t, b, r) in bits:
+            tl, tr, bl, br = corners(l, t, b, r)
+            idx = l * 8 + t * 4 + b * 2 + r
+            if params[:1] == ["w"]:                      # table builder
+                got = by_value.get(float(np.asarray(fn(w)).ravel()[idx]))
+            elif params[:4] == ["tl", "tr", "bl", "br"] and cls is None:
+                if "tbl" in params:                      # needs a table
+                    from sixvertex.cftp_exact import _weight_table
+                    got = by_value.get(float(np.asarray(fn(
+                        *(np.array([[float(x)]]) for x in (tl, tr, bl, br)),
+                        _weight_table(w))).ravel()[0]))
+                else:
+                    got = by_value.get(float(fn(tl, tr, bl, br, w)))
+            elif cls is not None:                        # bound classify
+                s = cls(n=4, a1=w["a1"], a2=w["a2"], b1=w["b1"], b2=w["b2"],
+                        c_up=w["c1"], c_down=w["c2"])
+                if "torch" in label and not getattr(s, "use_torch", False):
+                    break                                # no torch installed
+                arrs = [np.array([[float(x)]]) for x in (tl, tr, bl, br)]
+                if "torch" in label:
+                    import torch
+                    arrs = [torch.from_numpy(a) for a in arrs]
+                got = by_value.get(float(np.asarray(fn(s, *arrs)).ravel()[0]))
+            else:                                        # H, i, j, w form
+                continue
+            assert got == FACE[(l, t, b, r)], (
+                f"{label} labels (l,t,b,r)={(l, t, b, r)} as {got}; "
+                f"domains.FACE calls it {FACE[(l, t, b, r)]}")
+            checked += 1
+
+    assert checked >= 5 * len(bits), (
+        f"only {checked} (table, bits) pairs were actually probed; the "
+        f"adapters are skipping tables rather than checking them")

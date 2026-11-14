@@ -10,7 +10,6 @@ import uuid
 from sixvertex.sampler import SixVertexSampler
 import numpy as np
 
-from sixvertex.cftp import cftp_sample
 from sixvertex.cftp_exact import (cftp_sample as cftp_exact_sample,
                                   in_monotone_region)
 from sixvertex.exact import exact_sample, MAX_EXACT_N

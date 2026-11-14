@@ -12,18 +12,53 @@ from .sampler import SixVertexSampler
 # The general (a1,a2,b1,b2,c1,c2) weighted dynamics implemented in
 # sampler.py's live MCMC path is NOT used here, because monotonicity was
 # empirically checked and found to BREAK under it (a shared-seed coupling
-# violated pointwise ordering within ~50 sweeps in testing). Exact sampling
-# via CFTP for the fully general model is an open problem, not just an
-# engineering gap -- do not extend this function to accept a1/a2/b1/b2
-# without a fresh monotonicity proof/verification first.
+# violated pointwise ordering within ~50 sweeps in testing).
 #
-# Note: this proven-safe regime allows a=b=1 with ARBITRARY c1, c2 -- including
-# deep ferroelectric/antiferroelectric weights (|Delta|>1). CFTP remains
-# exactly correct there regardless of mixing time; slow mixing only means
-# more doublings (and more runtime) are needed before coalescence, never an
-# incorrect result. Verified directly: at a=b=1, c1=c2=sqrt(8) (Delta=-3,
-# deep antiferroelectric), CFTP coalesces correctly, just needing
-# substantially more half-sweeps than in the disordered regime.
+# That last sentence is still true as an observation and no longer true as a
+# conclusion. The ordering breaks OUTSIDE the monotone region, not for general
+# weights as such: sixvertex/cftp_exact.py does CFTP for general
+# (a1,a2,b1,b2,c1,c2) wherever c1c2 >= a1a2 and c1c2 >= b1b2, and
+# experiments/monotone_check.py checks monotonicity exhaustively there -- every
+# ordered pair of configurations, every site, every threshold of the driving
+# uniform, on five domains at five values of Delta, zero violations -- and also
+# shows the region is sharp, the coupling failing already at a = 1.01 with
+# b = c = 1. So the old warning not to extend this without "a fresh
+# monotonicity proof/verification" has been met; it is recorded here as
+# history, not as an open problem.
+#
+# THE NOTE THAT USED TO SIT HERE WAS FALSE, and dangerously so. It claimed
+# this regime "allows a=b=1 with ARBITRARY c1, c2 -- including deep
+# ferroelectric/antiferroelectric weights (|Delta|>1). CFTP remains exactly
+# correct there regardless of mixing time", citing as verification that at
+# c1=c2=sqrt(8) it "coalesces correctly". Coalescing is not sampling the right
+# measure, and that is the whole of the error: the chain does coalesce, to a
+# draw from the WRONG distribution.
+#
+# The reason is visible in one line of this file. p_up = c_up/(c_up+c_down) is
+# the only place the weights enter, so at c1=c2 it is 1/2 for EVERY value of
+# c -- the chain cannot tell c=1 from c=sqrt(8) and returns the uniform
+# measure in both cases. Measured at n=4 against the exact distribution,
+# 20000 samples (sampling noise is about 0.017 in total variation):
+#
+#     c1     c2    p_up    TV to the measure asked for    TV to uniform
+#     1.00  1.00   0.500            0.0166                   0.0166
+#     2.00  2.00   0.500            0.3700                   0.0166
+#     0.50  0.50   0.500            0.2833                   0.0166
+#     1.00  2.00   0.333            0.6139                   0.5589
+#     2.00  1.00   0.667            0.6118                   0.5566
+#     1.00  4.00   0.200            0.8461                   0.7830
+#
+# So: correct at c1 = c2 = 1 and NOWHERE ELSE. At c1 = c2 != 1 it silently
+# returns the uniform measure. At c1 != c2 it returns neither the requested
+# measure nor the uniform one -- p_up is no longer 1/2 and the result is not a
+# six-vertex DWBC measure at all. tests/test_sampler.py has carried a test
+# named test_cftp_only_correct_at_uniform_point since the rewrite; this
+# comment was simply never brought into line with it.
+#
+# Use sixvertex.cftp_exact.cftp_sample for anything else. Nothing in the
+# product calls this module (server.py's import of it was unused and has been
+# removed, since it shadowed the general cftp_sample by name); it is kept only
+# because the tests above pin the defect it documents.
 
 
 def _rand_field(master_seed: int, k: int, shape):

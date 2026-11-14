@@ -82,7 +82,15 @@ def sample(n, b1, b2, seed=None, initial="step"):
 def height_function(h, v):
     """Height function of a configuration.
 
-    H(i, j) counts the horizontal arrows crossing column j in rows above i.
+    H(i, j) counts the horizontal arrows entering column j in the rows BELOW
+    i -- rows 0 through i-1, and row 0 is the bottom. This said "rows above i",
+    which is the opposite, and orientation wording is load-bearing in this
+    module: its previous height function was simply wrong, and a separate bug
+    inverted the vertical axis in the path picture. Checked rather than
+    reasoned: at n=8, b1=0.3, b2=0.7, seed 3, column j=1 has H[4,1] = 3
+    against 3 arrows in rows 0..3 and 4 in rows 4..7, so the two readings are
+    distinguishable and the code counts the lower rows.
+
     Vertically H(i+1,j) - H(i,j) = h[i,j], which is 0 or 1; horizontally the
     sum telescopes through arrow conservation at each vertex to
     v[0,j] - v[i,j], again 0 or +-1. So this is a genuine height function.

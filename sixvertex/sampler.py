@@ -92,8 +92,17 @@ class SixVertexSampler:
         w = np.where(l & t & b & r, self.a2, w)
         w = np.where(l & t & (~b) & (~r), self.c1, w)
         w = np.where((~l) & (~t) & b & r, self.c2, w)
-        w = np.where((~l) & t & b & (~r), self.b1, w)
-        w = np.where(l & (~t) & (~b) & r, self.b2, w)
+        # b1 is the HORIZONTAL through-vertex, (l,t,b,r) = (1,0,0,1), and b2
+        # the vertical one, (0,1,1,0), per Gorin-Kenyon arXiv:2408.14446
+        # Thm 2.11. These two lines were the wrong way round: this file is the
+        # SIXTH copy of the labelling and the b1/b2 correction missed it, as it
+        # missed static/sixvertex.js. The measure is unaffected -- under DWBC
+        # every configuration has #b1 = #b2, so exchanging the two labels
+        # multiplies every weight by (b1/b2)^0 = 1 -- and this class exposes no
+        # per-type labels, only weights, so nothing observable changed. It is
+        # corrected so there is one convention in the tree rather than two.
+        w = np.where(l & (~t) & (~b) & r, self.b1, w)
+        w = np.where((~l) & t & b & (~r), self.b2, w)
         return w
 
     def _step_numpy(self, sweeps):
@@ -161,8 +170,9 @@ class SixVertexSampler:
         w = torch.where(l & t & b & r, torch.tensor(self.a2, device=w.device, dtype=w.dtype), w)
         w = torch.where(l & t & (~b) & (~r), torch.tensor(self.c1, device=w.device, dtype=w.dtype), w)
         w = torch.where((~l) & (~t) & b & r, torch.tensor(self.c2, device=w.device, dtype=w.dtype), w)
-        w = torch.where((~l) & t & b & (~r), torch.tensor(self.b1, device=w.device, dtype=w.dtype), w)
-        w = torch.where(l & (~t) & (~b) & r, torch.tensor(self.b2, device=w.device, dtype=w.dtype), w)
+        # b1 horizontal, b2 vertical -- see _classify_face_np
+        w = torch.where(l & (~t) & (~b) & r, torch.tensor(self.b1, device=w.device, dtype=w.dtype), w)
+        w = torch.where((~l) & t & b & (~r), torch.tensor(self.b2, device=w.device, dtype=w.dtype), w)
         return w
 
     def _step_torch(self, sweeps):
