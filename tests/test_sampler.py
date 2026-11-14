@@ -1503,6 +1503,7 @@ def test_live_equilibration_diagnostic_exists():
     """
     import os
     here = os.path.dirname(__file__)
+    import re
     js = open(os.path.join(here, "..", "static", "draw.js")).read()
     html = open(os.path.join(here, "..", "static", "index.html")).read()
     code = "\n".join(ln for ln in js.splitlines()
@@ -1511,13 +1512,39 @@ def test_live_equilibration_diagnostic_exists():
     assert "makeShadow" in code, "no shadow chain for the equilibration check"
     assert "updateMixingBadge" in code, "no live mixing diagnostic"
     assert 'id="mixing-badge"' in html, "no element to report the diagnostic"
-    # the shadow must start from the OTHER extremal configuration, else the
-    # comparison is vacuous
-    blk = code[code.index("function makeShadow"):]
-    blk = blk[:blk.index("function cFraction")]
-    assert "Math.min" in blk, (
-        "shadow chain does not start from the maximal height function; two "
-        "chains from the same start cannot detect failure to mix")
+    # The shadow must start from the OTHER extremal configuration, else the
+    # comparison is vacuous.
+    #
+    # This slice used to run from "function makeShadow" to the literal
+    # "function cFraction", and that broke silently the moment cFraction was
+    # renamed bFraction: str.index raised ValueError BEFORE the assertion
+    # below, so the real check went unmade while the test merely errored.
+    # Brace-matching the body instead means no rename can reach it.
+    start = code.index("function makeShadow")
+    depth, i = 0, code.index("{", start)
+    while True:
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    blk = code[start:i + 1]
+    assert blk.count("{") == blk.count("}") and len(blk) < len(code), blk[:200]
+
+    # The maximal height function is now taken from sixvertex.js rather than
+    # re-derived here, so what must be true of the body is that it asks for
+    # the "hi" start -- not that it contains a particular Math call. That
+    # shared helper is checked against the definition, and against both Python
+    # copies, by the extremal-start test.
+    assert re.search(r'extremalHeight\s*\(\s*n\s*,\s*["\']hi["\']\s*\)', blk), (
+        "the shadow chain does not start from the maximal height function; "
+        "two chains from the same start cannot detect failure to mix. Body "
+        "was:\n" + blk)
+    assert "lo" not in re.sub(r"[A-Za-z_]lo|lo[A-Za-z_]", "", blk), (
+        "the shadow chain appears to start from the MINIMAL height function, "
+        "which is where the main chain starts")
     # and it must actually be advanced alongside the main chain
     assert "shadow.step(sweeps)" in code, "shadow chain is never advanced"
 

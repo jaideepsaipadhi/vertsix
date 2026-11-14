@@ -1169,17 +1169,13 @@
     const sd = baseSeed === undefined || baseSeed === null
       ? fallback : companionSeed(baseSeed);
     const S = new SixVertexJS(n, w, sd);
-    const size = n + 1;
-    const corners = [[0, 0, 0], [n, 0, n], [0, n, n], [n, n, 0]];
-    for (let i = 0; i < size; i++) {
-      for (let j = 0; j < size; j++) {
-        let v = 1e9;                       // the MAX height function
-        for (const [a, b, hv] of corners) {
-          v = Math.min(v, hv + Math.abs(i - a) + Math.abs(j - b));
-        }
-        S.H[i * size + j] = v;
-      }
-    }
+    // The MAX height function, from sixvertex.js. This used to be a copy of
+    // that formula inlined right here -- a fifth copy of it in the project,
+    // and the reason extremalHeight's "hi" branch sat unreachable while this
+    // file reimplemented it with Math.min. The shared one is checked against
+    // the definition and against both Python copies in the suite; a private
+    // copy here was checked against nothing.
+    S.H = extremalHeight(n, "hi");
     return S;
   }
 
