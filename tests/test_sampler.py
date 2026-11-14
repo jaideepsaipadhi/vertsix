@@ -9093,3 +9093,189 @@ def test_no_two_campaign_cells_anywhere_share_a_seed():
     assert len(distinct) == len(NS_I) * len(DS), (
         f"run_island's allocator produced {len(distinct)} distinct blocks for "
         f"{len(NS_I) * len(DS)} cells")
+
+
+def test_the_island_variance_figures_are_internally_consistent_and_anchored():
+    """island.py's variance claims are a table of numbers in a docstring, and
+    the sibling test for the separation figures exists because such numbers
+    have been wrong here before -- 50x where the measurement said 36.2x, a
+    purity of 92-96% where it was 0.58, a p-value of 0.09 where the test gave
+    0.034.
+
+    Re-measuring all of them live is not affordable: the n=64 point alone is
+    502 seconds. So this does two cheaper things that together catch the
+    realistic failure, which is a number edited or transcribed in isolation.
+
+    First, the docstring's arithmetic must close. The eight replicate blocks
+    must actually have the mean, the across-block sd and the range the text
+    claims; the five (n, var) pairs must actually give the log-log slope the
+    text claims; and the "bootstrap half-widths are ~2.3x the true sd" claim
+    must follow from the bootstrap interval quoted just above it. None of
+    those can survive one number being changed.
+
+    Second, one live anchor: n=16 at 200 samples is three seconds, and it must
+    land within three across-block sigmas of the quoted 0.163. That ties the
+    table to the code rather than leaving it self-consistent but detached.
+
+    What this deliberately does NOT do is re-derive the slope from fresh
+    samples, because the slope estimator's own sd at these sample counts is
+    large -- that is measured separately and is the reason validate.py's fast
+    check cannot exclude logarithmic growth.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    doc = (root / "experiments" / "island.py").read_text()
+
+    # the eight replicate blocks
+    m = re.search(r"^\s*(0\.1\d{3}(?:\s+0\.1\d{3}){7})\s*$", doc, re.M)
+    assert m, "the eight replicate blocks are no longer in island.py's docstring"
+    blocks = [float(x) for x in m.group(1).split()]
+    assert len(blocks) == 8, blocks
+
+    claim = re.search(
+        r"mean (0\.\d+)\s+sd across blocks (0\.\d+)\s+range \[(0\.\d+), (0\.\d+)\]",
+        doc)
+    assert claim, "the mean/sd/range line is gone"
+    mean_c, sd_c, lo_c, hi_c = (float(g) for g in claim.groups())
+
+    arr = np.array(blocks)
+    assert abs(arr.mean() - mean_c) < 5e-4, (arr.mean(), mean_c)
+    assert abs(arr.std(ddof=1) - sd_c) < 5e-4, (arr.std(ddof=1), sd_c)
+    assert (abs(arr.min() - lo_c) < 5e-5 and abs(arr.max() - hi_c) < 5e-5), (
+        arr.min(), arr.max(), lo_c, hi_c)
+
+    # the bootstrap-is-conservative claim, against the interval quoted above it
+    bi = re.search(r"Delta=-3\.0\s+var\(k\) 0\.151\s+\[(0\.\d+), (0\.\d+)\]", doc)
+    assert bi, "the n=32, Delta=-3 bootstrap interval is gone"
+    half = (float(bi.group(2)) - float(bi.group(1))) / 2
+    ratio = re.search(r"roughly ([\d.]+)x the true sd", doc)
+    assert ratio, "the conservativeness ratio is no longer stated"
+    assert abs(half / arr.std(ddof=1) - float(ratio.group(1))) < 0.15, (
+        f"docstring says the bootstrap half-width is {ratio.group(1)}x the "
+        f"true sd; the quoted numbers give {half / arr.std(ddof=1):.2f}x")
+
+    # the five (n, var) pairs and the slope drawn from them
+    row = re.search(r"n=16\s+(0\.\d+)\s+n=24\s+(0\.\d+)\s+n=32\s+(0\.\d+)\s+"
+                    r"n=48\s+(0\.\d+)\s+n=64\s+(0\.\d+)", doc)
+    assert row, "the n=16..64 variance row is gone"
+    vs = np.array([float(g) for g in row.groups()])
+    ns = np.array([16, 24, 32, 48, 64], dtype=float)
+    slope = float(np.polyfit(np.log(ns), np.log(vs), 1)[0])
+    stated = re.search(r"alpha = ([+-][\d.]+)", doc)
+    assert stated, "the log-log slope is no longer stated"
+    assert abs(slope - float(stated.group(1))) < 5e-4, (
+        f"docstring states alpha = {stated.group(1)}; the row it sits under "
+        f"gives {slope:+.3f}")
+
+    # and the live anchor
+    from experiments.island import island
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import cftp_sample
+
+    w = weights_for_delta(-3.0)
+    ks = [island(cftp_sample(16, w, master_seed=7_000_016_000 + s)[0], 16)["k"]
+          for s in range(200)]
+    live = float(np.var([x for x in ks if x is not None]))
+    assert abs(live - vs[0]) < 3 * sd_c, (
+        f"n=16 measures var(k) = {live:.4f} against the quoted {vs[0]}, more "
+        f"than 3 across-block sigma ({3 * sd_c:.4f}) away")
+
+
+def test_the_variance_growth_check_is_not_the_vacuous_one_it_used_to_be():
+    """validate.py's check titled "variance of k does not grow with n" read
+
+        max(vs) < 3 * min(vs) + 0.05        over n = 24, 32, 48
+
+    and did not test that. Over a factor-two range, max/min < 3 admits
+    var ~ n^alpha for every alpha < log2(3) = 1.58, and with the slack it
+    passes outright under linear growth:
+
+        bounded       [0.150, 0.150, 0.150]  ratio 1.00  passes
+        log n         [0.150, 0.164, 0.183]  ratio 1.22  passes
+        sqrt n        [0.150, 0.173, 0.212]  ratio 1.41  passes
+        LINEAR in n   [0.150, 0.200, 0.300]  ratio 2.00  passes
+        n^1.6         [0.150, 0.238, 0.455]  ratio 3.03  passes
+
+    A check that cannot fail under linear growth, in the file whose module
+    docstring says it exists so that things "can fail loudly", is the failure
+    this project keeps finding: a true-sounding title over a predicate that
+    does not test it.
+
+    This test holds the replacement to three things.
+
+    It must be a slope test, not a ratio test -- the arithmetic above is
+    replayed here against the OLD predicate to show those five alternatives
+    really do pass it, so the motivation is computed rather than asserted.
+
+    Its threshold must be justified by the measured spread quoted beside it,
+    at three sigma or tighter. The slope estimator's sd at this sample count
+    is 0.302, measured from six independent repeats, and the docstring quotes
+    those six slopes -- so this recomputes their sd and checks the stated
+    sigma and the threshold against it. A looser threshold, or a sigma that
+    does not match the repeats, fails.
+
+    And it must not overclaim. At sigma = 0.30 the check cannot separate
+    bounded from log n (0.29) or sqrt n (0.5), so its title must not say it
+    does; the words that would be wrong are rejected by name.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "experiments" / "validate.py").read_text()
+
+    # 1. the old predicate really was vacuous
+    old = lambda vs: max(vs) < 3 * min(vs) + 0.05          # noqa: E731
+    alternatives = {
+        "bounded": [0.150, 0.150, 0.150],
+        "log n": [0.150, 0.164, 0.183],
+        "sqrt n": [0.150, 0.173, 0.212],
+        "linear": [0.150, 0.200, 0.300],
+        "n^1.6": [0.150, 0.238, 0.455],
+    }
+    assert all(old(v) for v in alternatives.values()), (
+        "the old ratio predicate is being credited with rejecting something "
+        "it accepts; recheck the motivation in the docstring")
+    # the comment that explains the old predicate quotes it, so look at code
+    # lines only -- the same distinction the is_symmetric_regime retirement
+    # check needs, and for the same reason
+    code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
+    assert not [ln for ln in code if "3 * min(" in ln], (
+        "the vacuous ratio predicate is back in validate.py as live code")
+
+    # 2. the threshold is at most three measured sigma
+    m = re.search(r"abs\(alpha\) < ([\d.]+)", src)
+    assert m, "the slope check is gone from validate.py"
+    threshold = float(m.group(1))
+
+    slopes = re.search(
+        r"([+-]0\.\d+)\s+([+-]0\.\d+)\s+([+-]0\.\d+)\s+"
+        r"([+-]0\.\d+)\s+([+-]0\.\d+)\s+([+-]0\.\d+)", src)
+    assert slopes, "the six measured repeat slopes are no longer quoted"
+    arr = np.array([float(g) for g in slopes.groups()])
+    sd = float(arr.std(ddof=1))
+
+    stated = re.search(r"sd ([\d.]+),\s+max \|slope\|", src)
+    assert stated, "the stated sd is gone"
+    assert abs(sd - float(stated.group(1))) < 5e-4, (
+        f"validate.py states sd {stated.group(1)}; its own six repeats give "
+        f"{sd:.3f}")
+    assert threshold <= 3 * sd + 1e-9, (
+        f"threshold {threshold} is {threshold / sd:.1f} sigma, looser than "
+        f"the 3 sigma the measured spread ({sd:.3f}) supports; at 0.5 it was "
+        f"1.65 sigma and failed about one correct run in ten")
+
+    # 3. it does not claim what sigma = 0.30 cannot deliver
+    title = re.search(r'check\("(var\(k\)[^"]*)"\s*\n?\s*"([^"]*)"', src)
+    assert title, "could not read the check's title"
+    words = (title.group(1) + title.group(2)).lower()
+    for overclaim in ("does not grow with n", "bounded", "discrete gaussian",
+                      "excludes sqrt", "excludes log"):
+        assert overclaim not in words, (
+            f"the check's title claims {overclaim!r}, which a slope sigma of "
+            f"{sd:.2f} over a factor-two range in n cannot support")
+    assert "linear" in words and "log" in words, (
+        f"the title should say what it does exclude (linear) and what it "
+        f"cannot (log n); got {words!r}")

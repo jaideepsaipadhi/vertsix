@@ -204,14 +204,67 @@ def validate_island():
           ok, "; ".join(detail))
 
     # (d) a discrete Gaussian has variance bounded in n -- if ours grows, the
-    #     observable is wrong
+    #     observable is wrong.
+    #
+    # This check used to read `max(vs) < 3 * min(vs) + 0.05` over n = 24, 32,
+    # 48 at 30 samples, under the title "variance of k does not grow with n".
+    # It did not test that. Over a factor-two range in n, max/min < 3 tolerates
+    # var ~ n^alpha for any alpha < log2(3) = 1.58, and with the +0.05 slack it
+    # passes outright under:
+    #
+    #     bounded        vs = [0.150, 0.150, 0.150]   ratio 1.00   passes
+    #     log n growth   vs = [0.150, 0.164, 0.183]   ratio 1.22   passes
+    #     sqrt n         vs = [0.150, 0.173, 0.212]   ratio 1.41   passes
+    #     LINEAR in n    vs = [0.150, 0.200, 0.300]   ratio 2.00   passes
+    #     n^1.6          vs = [0.150, 0.238, 0.455]   ratio 3.03   passes
+    #
+    # A check in this file that cannot fail under linear growth is the exact
+    # thing the module docstring says this file exists to prevent.
+    #
+    # Replaced by a log-log slope with a threshold taken from the estimator's
+    # MEASURED spread, not from an estimate of it. Six independent repeats of
+    # exactly the measurement below (n = 16, 24, 32 at 120 samples) give
+    # slopes
+    #
+    #     -0.010  +0.084  +0.180  +0.418  -0.485  +0.164
+    #     mean +0.058,  sd 0.302,  max |slope| 0.485
+    #
+    # so the slope estimator's sd here is 0.30. That number is the whole
+    # story, and it is worth being blunt about what it means: over a factor-
+    # two range in n, with var(k) this noisy, this check CANNOT distinguish
+    # bounded variance from logarithmic growth (effective exponent 0.29) or
+    # even from sqrt-n growth (0.5) -- both sit inside one sigma. My first
+    # attempt at this threshold was 0.5, which is 1.65 sigma and would fail
+    # roughly one run in ten on correct code; the repeat at -0.485 above is
+    # that near-miss.
+    #
+    # The threshold is 0.9, three measured sigma. What that genuinely
+    # excludes is growth as fast as linear, which is what a broken observable
+    # would look like -- and that is all it is claimed to do. The old form
+    # excluded nothing up to n^1.58.
+    #
+    # Boundedness itself is established elsewhere, with the lever arm this
+    # script cannot afford: n = 16, 24, 32, 48, 64 at 200 samples gives
+    # var(k) = 0.163, 0.134, 0.200, 0.134, 0.200, a slope of +0.098 over a
+    # factor of FOUR in n, where log growth would give 0.29. Recorded in
+    # experiments/island.py with the replicate study behind it. Eight
+    # independent 200-sample blocks at n = 32 (0.1444, 0.1630, 0.1600,
+    # 0.1816, 0.1375, 0.1716, 0.1570, 0.1476; mean 0.1578, sd 0.0146) also
+    # show the bootstrap intervals quoted there are conservative rather than
+    # narrow.
+    ns = (16, 24, 32)
     vs = []
-    for n_ in (24, 32, 48):
-        kk = [island(cftp_sample(n_, w, master_seed=990000 + s)[0], n_)["k"]
-              for s in range(30)]
+    for n_ in ns:
+        kk = [island(cftp_sample(n_, w, master_seed=990000 + 5000 * n_ + s)[0],
+                     n_)["k"] for s in range(120)]
         vs.append(float(np.var([x for x in kk if x is not None])))
-    check("variance of k does not grow with n", max(vs) < 3 * min(vs) + 0.05,
-          f"var at n=24,32,48: {[round(v,3) for v in vs]}")
+    alpha = float(np.polyfit(np.log(ns), np.log(vs), 1)[0])
+    check("var(k) shows no growth in n as fast as linear "
+          "(3 measured sigma; too noisy here to exclude log n -- see note)",
+          abs(alpha) < 0.9,
+          f"var at n={','.join(map(str, ns))}: {[round(v, 3) for v in vs]}; "
+          f"log-log slope {alpha:+.3f}, sigma 0.30 "
+          f"(bounded 0, log n 0.29, sqrt n 0.5, linear 1)")
 
     # (e) Gorin: "This island should be there only for Delta < -1." Reported,
     #     not asserted -- it is a prediction the measurement should be able to

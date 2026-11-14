@@ -66,6 +66,39 @@ only the 200-sample numbers support saying so; quote a 40-sample variance and
 it will contradict itself. With sd ~ 0.42 only two or three lattice points
 carry appreciable mass, so testing the *shape* needs large sample counts rather
 than large n -- the tails are where the Gaussian claim actually bites.
+
+Those bracketed figures are BOOTSTRAP intervals, and a bootstrap resamples
+the one block it was given, so it cannot see the variability of a fresh draw.
+That was worth checking rather than assuming, because a single independent
+200-sample block at n=32, Delta=-3 came out at 0.200 -- outside the [0.112,
+0.188] above -- which looked at first like the table failing to reproduce.
+Eight independent 200-sample blocks settle it:
+
+    0.1444  0.1630  0.1600  0.1816  0.1375  0.1716  0.1570  0.1476
+    mean 0.1578    sd across blocks 0.0146    range [0.1375, 0.1816]
+
+The quoted 0.151 sits comfortably inside that, so the table reproduces; and
+the bootstrap half-width for that row (0.038) is roughly 2.6x the true sd, so
+the intervals are CONSERVATIVE rather than too narrow. The 0.200 block is about
+2.9 sigma high, which is unremarkable to meet once in several cells and is
+not evidence against anything.
+
+n-independence, measured over a factor of four rather than the factor of 1.5
+the table covers -- 200 samples per point, Delta = -3:
+
+    n=16  0.163     n=24  0.134     n=32  0.200     n=48  0.134     n=64  0.200
+
+    log-log slope alpha = +0.098        (bounded 0, log n 0.29, linear 1)
+
+Non-monotone, max/min = 1.49, and the slope is well inside what noise
+explains. The repeated values are not a bug: k has two or three lattice
+points of appreciable mass, so var(k) is close to p(1-p) and takes a
+coarse-grained set of values at fixed N.
+
+This is the measurement that excludes logarithmic growth; the fast check in
+experiments/validate.py cannot, and now says so in place of its old claim --
+see the note there, which records that its previous form passed under linear
+growth in n.
 """
 from __future__ import annotations
 
