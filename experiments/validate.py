@@ -243,6 +243,17 @@ def validate_island():
     # would look like -- and that is all it is claimed to do. The old form
     # excluded nothing up to n^1.58.
     #
+    # One trap, recorded so nobody chases it twice: repeating the same study
+    # at 240 samples gives sd 0.288, barely below the 0.302 at 120, which
+    # looks like a variance that will not shrink -- i.e. like a broken
+    # measurement. It is not. Six repeats estimate an sd to about
+    # sd/sqrt(2*5) = +-0.10, so 0.302 and 0.288 are indistinguishable and the
+    # 0.21 that 1/sqrt(N) predicts is inside one sigma of 0.288. The
+    # individual var(k) estimates do shrink as they should (spread 0.024 at
+    # 120 samples against 0.015 at 240, a factor of 1.6 for a factor of 2 in
+    # N). Resolving the slope sd properly would need tens of repeats, which
+    # buys nothing here: 0.9 is deliberately the conservative end.
+    #
     # Boundedness itself is established elsewhere, with the lever arm this
     # script cannot afford: n = 16, 24, 32, 48, 64 at 200 samples gives
     # var(k) = 0.163, 0.134, 0.200, 0.134, 0.200, a slope of +0.098 over a
