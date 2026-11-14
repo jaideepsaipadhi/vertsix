@@ -8228,3 +8228,104 @@ def test_the_public_dispatch_behaves_the_same_on_both_sides_of_its_boundary():
             sv.sample(n, {"c1": 2.0, "c2": 2.0}, seed=1)
         with pytest.raises(ValueError, match="unexpected"):
             sv.sample(n, dict(w, c_1=2.0), seed=1)
+
+
+def test_the_two_cftp_chains_start_from_the_extremal_heights_the_definition_gives():
+    """CFTP certifies nothing unless its two chains start at the TOP and BOTTOM
+    of the order.  The lo/hi pair is what supplies that, and the formula for it
+    -- the pointwise max and min of (corner height -+ Manhattan distance), the
+    McShane extensions -- is written out three independent times: in
+    cftp_exact.py, in sampler.py, and again in static/sixvertex.js, which is
+    the copy every browser runs.
+
+    What the suite checked until now was domains.extremal_heights against
+    cftp_exact.extremal_height.  Two of four copies, and both checked only
+    against each other: an error shared by every copy passes, and the two
+    copies NOT in that comparison could drift without anything noticing.  This
+    test checks the pair against its definition instead, and then checks the
+    other two copies against it.
+
+    The definition has four parts, and all four matter:
+
+      * every lattice edge differs by exactly +-1.  Lipschitz alone is not
+        enough; a height function needs the parity too, and it holds here
+        because the four corner values satisfy h = i+j (mod 2), so every term
+        (hv -+ dist) does, so the max and the min do.  A formula that got the
+        corner data wrong would still be 1-Lipschitz and would still coalesce.
+      * the boundary is the DWBC staircase, and lo and hi agree on it -- which
+        is what makes them two chains on ONE state space.
+      * lo <= hi everywhere.
+      * lo < hi at every one of the (n-1)^2 interior corners.  Not a sanity
+        check: if the two starts agreed anywhere in the interior they would
+        agree there forever (the coupling is monotone and the order is
+        preserved), and coalescence at that site would be vacuous.  Measured:
+        1, 9, 16, 49, 144 strictly-ordered interior corners at n = 2, 4, 5, 8,
+        13, which is (n-1)^2 in each case.
+
+    The JS copy is EXECUTED under node rather than ported, for the reason the
+    header gives: a port tests the port.
+    """
+    import json
+    import pathlib
+    import subprocess
+    import tempfile
+
+    from sixvertex.cftp_exact import extremal_height
+    from sixvertex.sampler import SixVertexSampler
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    sizes = [2, 4, 5, 8, 13]
+
+    driver = (
+        "const fs=require('fs');\n"
+        "eval(fs.readFileSync(process.argv[2],'utf8'));\n"
+        "const out={};\n"
+        f"for (const n of {json.dumps(sizes)}) "
+        "for (const kind of ['lo','hi']) "
+        "out[n+':'+kind]=Array.from(extremalHeight(n,kind));\n"
+        "console.log(JSON.stringify(out));\n"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        drv = os.path.join(td, "exh.js")
+        open(drv, "w").write(driver)
+        proc = subprocess.run(
+            ["node", drv, str(root / "static" / "sixvertex.js")],
+            capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    js = json.loads(proc.stdout)
+
+    for n in sizes:
+        pair = {k: extremal_height(n, k).astype(np.int64) for k in ("lo", "hi")}
+        for kind, H in pair.items():
+            # a height function, not merely a Lipschitz one
+            for axis, name in ((0, "rows"), (1, "columns")):
+                steps = set(np.abs(np.diff(H, axis=axis)).ravel().tolist())
+                assert steps == {1}, (
+                    f"n={n} {kind}: steps across {name} are {sorted(steps)}, so "
+                    f"this is not a height function")
+            # the DWBC boundary, identical for lo and hi
+            up, down = np.arange(n + 1), np.arange(n, -1, -1)
+            assert np.array_equal(H[0, :], up) and np.array_equal(H[:, 0], up), (
+                f"n={n} {kind}: boundary is not DWBC")
+            assert np.array_equal(H[n, :], down) and np.array_equal(H[:, n], down), (
+                f"n={n} {kind}: boundary is not DWBC")
+            # the browser's copy, run as shipped
+            assert np.array_equal(
+                np.array(js[f"{n}:{kind}"], dtype=np.int64).reshape(n + 1, n + 1),
+                H), (f"n={n} {kind}: static/sixvertex.js disagrees with "
+                     f"cftp_exact.extremal_height")
+            # and sampler.py's copy, which nothing compared before
+            assert np.array_equal(
+                SixVertexSampler.extremal_height(n, kind).astype(np.int64), H), (
+                f"n={n} {kind}: sampler.extremal_height disagrees with "
+                f"cftp_exact.extremal_height")
+
+        lo, hi = pair["lo"], pair["hi"]
+        assert (lo <= hi).all(), f"n={n}: lo is not below hi"
+        interior = np.zeros_like(lo, dtype=bool)
+        interior[1:n, 1:n] = True
+        assert (lo[interior] < hi[interior]).all(), (
+            f"n={n}: the two chains already agree at "
+            f"{int((lo[interior] == hi[interior]).sum())} interior corners, "
+            f"where coalescence certifies nothing")
+        assert int((lo < hi).sum()) == (n - 1) ** 2, n
