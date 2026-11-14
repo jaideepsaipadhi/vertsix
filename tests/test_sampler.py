@@ -9708,3 +9708,115 @@ def test_the_shift_delta_figure_quotes_the_fits_its_own_csv_gives():
     assert "C-WEIGHT" in doc, (
         "the docstring no longer says which c the fits use; refitting against "
         "ln|Delta| gives numbers that look like a contradiction")
+
+
+def test_the_page_quotes_the_figures_its_own_csvs_give():
+    """index.html is the surface a reader actually sees, and its numbers were
+    the last in the project living only as prose. They went stale: the page
+    still said the stopping-time exponent "is flat at 2.30 for Delta >= -1.5
+    and rises to 2.86 at Delta = -4" after the campaign behind that figure was
+    regenerated on disjoint seeds and gave 2.33 for Delta >= -2 rising to 2.76.
+
+    A docstring going stale is a cost to the next developer. The page going
+    stale is a claim to everyone else, so it gets the same treatment as the
+    docstrings: every figure the page quotes is recomputed here from the CSV
+    the figure was drawn from.
+
+    Three passages, and the other two were already right -- checked rather
+    than assumed, since that is the whole point:
+
+      * stopping time: plateau level and cut, and the Delta=-4 exponent
+      * P(island exists): the ceiling for Delta >= -1, the value at Delta=-3,
+        and that it rises with N
+      * the decay exponent theta: its value at Delta=-3
+    """
+    import csv
+    import pathlib
+    import re
+    from collections import defaultdict
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    import html as _html
+
+    page = (root / "static" / "index.html").read_text()
+    # unescape first -- hand-listing entities missed &Delta; and left the
+    # regexes matching nothing, which reads as "the page no longer says this"
+    flat = _html.unescape(page)
+    flat = (flat.replace("\u2206", "Delta").replace("\u0394", "Delta")
+                .replace("\u00a0", " ").replace("\u2212", "-")
+                .replace("\u2265", ">=").replace("\u2014", "--"))
+    flat = " ".join(flat.split())
+
+    # ---- stopping time -------------------------------------------------
+    rows = list(csv.DictReader(
+        (root / "experiments" / "cftp_stopping_sample.csv").open()))
+    by_delta = defaultdict(dict)
+    for r in rows:
+        by_delta[float(r["delta"])][int(r["n"])] = float(r["median_Tstar"])
+    alphas = {}
+    for d, by_n in by_delta.items():
+        ns = np.array(sorted(by_n), dtype=float)
+        ts = np.array([by_n[int(n)] for n in ns], dtype=float)
+        alphas[d] = float(np.polyfit(np.log(ns), np.log(ts), 1)[0])
+
+    m = re.search(r"flat at ([\d.]+) for Delta >= (-?[\d.]+) and rises to "
+                  r"([\d.]+) at Delta = (-?[\d.]+)", flat)
+    assert m, "the page no longer states the stopping-time exponents"
+    level, cut, deep, deep_d = (float(g) for g in m.groups())
+
+    # The cut must be the one panel (b) actually draws, not merely one that
+    # happens to give a similar mean. Without this the page could say
+    # "Delta >= -1.5" or "Delta >= -2" interchangeably -- the plateau means
+    # differ by less than the tolerance, so a mutation restoring the old cut
+    # passed until this was added.
+    ps = (root / "experiments" / "plot_stopping.py").read_text()
+    thr = re.search(r"PLATEAU_MAX_DELTA = (-?[\d.]+)", ps)
+    assert thr, "plot_stopping no longer names its plateau threshold"
+    assert cut == float(thr.group(1)), (
+        f"the page quotes the plateau for Delta >= {cut:g} while panel (b) "
+        f"draws it for Delta >= {float(thr.group(1)):g}")
+
+    plateau = [a for d, a in alphas.items() if d >= cut]
+    assert abs(float(np.mean(plateau)) - level) < 0.02, (
+        f"the page says the plateau is {level}; the CSV gives "
+        f"{np.mean(plateau):.3f} for Delta >= {cut:g}")
+    assert abs(alphas[deep_d] - deep) < 0.02, (
+        f"the page says {deep} at Delta={deep_d:g}; the CSV gives "
+        f"{alphas[deep_d]:.3f}")
+    assert alphas[deep_d] > max(plateau), (
+        "the page says the exponent RISES into the antiferroelectric phase "
+        "and the CSV no longer agrees")
+
+    # the page must carry the caveat, since the margin is 0.04
+    assert "ordering, not a clean separation" in flat, (
+        "the page states the rise without the caveat that the intervals "
+        "clear each other by 0.04")
+
+    # ---- P(island exists) ----------------------------------------------
+    ex = list(csv.DictReader(
+        (root / "experiments" / "island_exists_sample.csv").open()))
+    shallow = max(float(r["p_exists"]) for r in ex if float(r["delta"]) >= -1.0)
+    at3 = {int(r["n"]): float(r["p_exists"])
+           for r in ex if float(r["delta"]) == -3.0}
+
+    pm = re.search(r"at most ([\d.]+)\) and climbs below, reaching ([\d.]+) at",
+                   flat)
+    assert pm, "the page no longer states the P(island) figures"
+    assert abs(shallow - float(pm.group(1))) < 1e-4, (shallow, pm.group(1))
+    assert abs(max(at3.values()) - float(pm.group(2))) < 0.005, (
+        at3, pm.group(2))
+    sizes = sorted(at3)
+    assert all(at3[a] < at3[b] for a, b in zip(sizes, sizes[1:])), (
+        f"the page says P(island) rises with N at Delta=-3; measured {at3}")
+
+    # ---- the decay exponent theta --------------------------------------
+    from experiments.plot_island_order import theta_with_interval
+    order = list(csv.DictReader(
+        (root / "experiments" / "island_order_sample.csv").open()))
+    th = theta_with_interval(order, -3.0, sorted(
+        {int(r["n"]) for r in order}), reps=4000)
+    tm = re.search(r"to ([\d.]+) at Delta = -3", flat)
+    assert tm, "the page no longer states theta at Delta=-3"
+    assert abs(float(th[0]) - float(tm.group(1))) < 0.02, (
+        f"the page says theta = {tm.group(1)} at Delta=-3; recomputing gives "
+        f"{float(th[0]):.3f}")
