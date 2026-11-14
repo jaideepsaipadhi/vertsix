@@ -9554,16 +9554,32 @@ def test_the_domain_figure_quotes_the_numbers_two_scripts_actually_produce():
         shifts[d] = (diff, se, abs(diff) / se)
     assert len(shifts) >= 4, shifts
 
-    # the docstring's two quoted shifts must be the measured ones
-    for d in (-1.5, -3.0):
-        m = re.search(
-            rf"([+-]0\.\d+) \+- (0\.\d+) \((\d\.\d) sigma\) at\s*\n?\s*"
-            rf"Delta={d:g}", doc)
+    # the per-Delta table must be the measured one
+    for d, (diff, se, _nsig) in shifts.items():
+        m = re.search(rf"Delta={d:.1f}\s+([+-]0\.\d+) \+- (0\.\d+)", doc)
         assert m, f"the Delta={d:g} shift is no longer quoted"
-        diff, se, nsig = shifts[d]
         assert abs(diff - float(m.group(1))) < 1e-4, (d, diff, m.group(1))
         assert abs(se - float(m.group(2))) < 1e-4, (d, se, m.group(2))
-        assert abs(nsig - float(m.group(3))) < 0.06, (d, nsig, m.group(3))
+
+    # and the POOLED figure the argument actually uses. This is the one I got
+    # wrong: +0.0088 matches no single Delta, so I replaced it -- but it is
+    # the inverse-variance pooling of all four, exact to every digit.
+    w = np.array([1.0 / v[1] ** 2 for v in shifts.values()])
+    dd = np.array([v[0] for v in shifts.values()])
+    pooled = float(np.sum(w * dd) / np.sum(w))
+    pooled_se = float(1.0 / np.sqrt(np.sum(w)))
+    pm = re.search(r"pooled ([+-]0\.\d+) \+- (0\.\d+), (\d\.\d) sigma", doc)
+    assert pm, "the pooled size-dependence figure is no longer quoted"
+    assert abs(pooled - float(pm.group(1))) < 1e-4, (pooled, pm.group(1))
+    assert abs(pooled_se - float(pm.group(2))) < 1e-4, (pooled_se, pm.group(2))
+    assert abs(abs(pooled / pooled_se) - float(pm.group(3))) < 0.06, (
+        pooled / pooled_se, pm.group(3))
+
+    # plot_shift_delta states the same pooled number; the two must agree
+    sd_doc = (root / "experiments" / "plot_shift_delta.py").read_text()
+    sm = re.search(r"pooled \+?([\d.]+) \+- ([\d.]+), ([\d.]+) sigma", sd_doc)
+    assert sm, "plot_shift_delta no longer states the pooled shift"
+    assert abs(pooled - float(sm.group(1))) < 1e-4, (pooled, sm.group(1))
 
     # n=32 really is ABOVE n=16 at the shallow points, which is the direction
     # the whole size-dependence argument assumes
@@ -9589,12 +9605,13 @@ def test_the_domain_figure_quotes_the_numbers_two_scripts_actually_produce():
     # inside a parenthetical correction, never in the claim text.
     flat = " ".join(doc.split())
     claim_text = re.sub(r"\((?:This|this) (?:read|paragraph)[^)]*\)", "", flat)
-    for retired in ("five times the square's", "+0.0088"):
+    for retired in ("five times the square's",):
         assert retired in flat, (
             f"the correction recording {retired!r} is gone, so the number "
             f"would read as if it had always been right")
         assert retired not in claim_text, (
             f"{retired!r} is back in the docstring's CLAIM text, not only in "
             f"the parenthetical that retires it")
-    for phrase in ("one fifth of the square", "has the ratio upside down"):
+    for phrase in ("one fifth of the square", "has the ratio upside down",
+                   "may be a DIFFERENT statistic"):
         assert phrase in flat, f"the docstring no longer records {phrase!r}"

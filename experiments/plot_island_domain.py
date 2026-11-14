@@ -19,18 +19,26 @@ dispersion, since the histograms are equally narrow everywhere.
 NOR BY AREA, which is the first objection to make and which this note used to
 leave unanswered. "The same n" does not mean the same number of cells: the
 four domains hold 2304, 1536, 1280 and 2048 faces, a range of 1.80x. That
-matters because R_lo IS size-dependent -- experiments/plot_shift_size.py
-measures, on the CSVs shipped here, +0.0101 +- 0.0039 (2.6 sigma) at
-Delta=-1.5 and +0.0092 +- 0.0049 (1.9 sigma) at Delta=-3.0 going from n=16 to
-n=32, a 4x change in cells. Scaled to a 1.80x range -- the shift goes as the
-log of the cell count, so by log(1.80)/log(4) = 0.42 -- that allows at most
-about 0.004, which is 2% of the 0.185 spread seen here.
+matters because R_lo IS size-dependent: going from n=16 to n=32, a 4x change
+in cells, R_lo rises by a pooled +0.0088 +- 0.0029, 3.0 sigma. That is the
+inverse-variance pooling of the four shared-Delta differences that
+experiments/plot_shift_size.py reports --
 
-(This paragraph used to cite "+0.0088 ... at 3.0 sigma", which is neither of
-the two measurements and overstates the better of them. The bound it supports
-is unchanged -- 0.0101 scaled by 0.42 is still 0.004 -- but the number was
-not one plot_shift_size produces, and it is pinned to that script's own
-output now.)
+    Delta=-1.5  +0.0101 +- 0.0039      Delta=-6.0  -0.0030 +- 0.0121
+    Delta=-3.0  +0.0092 +- 0.0049      Delta=-8.0  -0.0077 +- 0.0255
+
+-- and it is stated in experiments/plot_shift_delta.py. Scaled to a 1.80x
+range -- the shift goes as the log of the cell count, so by
+log(1.80)/log(4) = 0.42 -- it allows at most about 0.004, which is 2% of the
+0.185 spread seen here.
+
+(I briefly "corrected" this paragraph by replacing the pooled figure with the
+two shallow per-Delta ones, on the grounds that +0.0088 matched neither. It
+matches the pooling of all four exactly, to every digit including the 3.0
+sigma, and the original was right. Recorded because the failure mode is
+specific and easy to repeat: a quoted number that does not match the obvious
+recomputation may be a DIFFERENT statistic rather than a wrong one, and the
+thing to do is find which.)
 
 The ordering settles it more directly than the bound does. If area drove
 R_lo, R_lo would rise with cell count, as it does with n on the square. It
