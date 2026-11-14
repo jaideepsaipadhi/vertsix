@@ -14,9 +14,37 @@ The control is the part that makes this an argument rather than an
 observation. Coalescence time is heavy-tailed and censoring biases exactly the
 slowest runs, so a rising exponent at one Delta could be the measurement
 failing rather than the model. Running the identical pipeline at Delta=-1,
-where the exponent is known to be flat, tests that: it stays flat (+0.21 +-
-0.19, p=0.26) while Delta=-4 rises (+2.06 +- 0.68, p=0.002). No run at either
-Delta was censored.
+where the exponent is known to be flat, tests that. Recomputed from the CSV
+shipped beside this script by local_exponent_trend() below:
+
+    Delta = -1     local-exponent trend  +0.69 +- 0.46,  p = 0.230
+    Delta = -4     local-exponent trend  +3.49 +- 1.27,  p = 0.071
+
+The control is flat and Delta=-4 trends up about five times as steeply, which
+is the comparison panel (b) is for. But p = 0.071 is not significant at 0.05
+and this note must not pretend otherwise: with six sizes there are five local
+exponents and three degrees of freedom, and a trend that direction on that
+little data is suggestive, not established. Panel (a) carries the argument --
+a power law fitted on n <= 48 tracks Delta=-1 to n=80 and visibly fails to
+track Delta=-4 -- and panel (b) supports it.
+
+Two things were wrong with the numbers this paragraph used to quote, and both
+are the kind that only show up when the statistic is recomputed from the data
+rather than carried along in prose.
+
+The p-value was a NORMAL tail. It read "+2.06 +- 0.68, p=0.002", and 2.06/0.68
+= 3.03 gives 0.0025 as a two-sided normal tail and 0.056 on the three degrees
+of freedom actually available. A normal approximation on five points
+overstated the significance by a factor of twenty and carried the claim across
+0.05 in the process.
+
+And the slope itself did not reproduce: the CSV in this repository gives +3.49
++- 1.27 at Delta=-4 and +0.69 +- 0.46 at Delta=-1, not +2.06 and +0.21. The
+quoted figures came from data that is no longer the data here. That is why
+local_exponent_trend() now computes them and the script prints them, and why
+a test refits the shipped CSV and checks this paragraph against it.
+
+No run at either Delta was censored.
 """
 from __future__ import annotations
 
@@ -31,6 +59,38 @@ import matplotlib.pyplot as plt
 BLUE, ORANGE = "#2a78d6", "#eb6834"    # validated categorical pair, light mode
 SURFACE, INK, INK2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#8a8985"
 LOW, HIGH = (32, 48), (56, 80)
+
+
+def local_exponent_trend(n, t, lo, hi):
+    """Weighted least-squares trend of the LOCAL exponent against log n.
+
+    Returns (slope, se, pvalue, local_exponents). The p-value uses
+    Student's t with len(local_exponents) - 2 degrees of freedom, which is
+    THREE here, and that matters: the docstring used to quote p=0.002 for a
+    slope/se ratio of 3.03, which is the two-sided NORMAL tail. On 3 degrees
+    of freedom the same ratio gives 0.056. A normal approximation on five
+    points overstates the significance by a factor of twenty and moves the
+    claim across 0.05.
+
+    Computed here rather than quoted, so the number in the docstring is one
+    this function produced from the CSV shipped beside it.
+    """
+    from scipy.stats import t as _t
+
+    sd = (np.log(hi) - np.log(lo)) / (2 * 1.96)
+    al = np.log(t[1:] / t[:-1]) / np.log(n[1:] / n[:-1])
+    se = np.hypot(sd[1:], sd[:-1]) / np.log(n[1:] / n[:-1])
+    x = np.log(np.sqrt(n[:-1] * n[1:]))
+
+    w = 1.0 / se ** 2
+    xb = np.sum(w * x) / np.sum(w)
+    yb = np.sum(w * al) / np.sum(w)
+    sxx = np.sum(w * (x - xb) ** 2)
+    slope = float(np.sum(w * (x - xb) * (al - yb)) / sxx)
+    slope_se = float(np.sqrt(1.0 / sxx))
+    df = len(al) - 2
+    pval = float(2 * (1 - _t.cdf(abs(slope / slope_se), df)))
+    return slope, slope_se, pval, al
 
 
 def style(ax):
@@ -90,6 +150,11 @@ def main(src, dst):
                      markersize=7, capsize=3, elinewidth=1.4,
                      markeredgecolor=SURFACE, markeredgewidth=1.4, zorder=4,
                      label=f"$\\Delta={d:+.0f}$")
+
+        slope, slope_se, pval, _ = local_exponent_trend(n, t, lo, hi)
+        print(f"  Delta={d:+.1f}  local-exponent trend "
+              f"{slope:+.2f} +- {slope_se:.2f}, p={pval:.3f} "
+              f"(t, {len(al) - 2} df)")
 
     axL.set_xscale("log"); axL.set_yscale("log")
     axL.set_xticks([32, 40, 48, 56, 64, 80])

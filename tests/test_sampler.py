@@ -9383,3 +9383,93 @@ def test_the_stopping_figure_quotes_the_exponents_its_own_csv_gives():
     assert abs(worst * 100 - int(pm.group(1))) < 1.5, (
         f"docstring says within {pm.group(1)}%; the CSV's worst deviation is "
         f"{worst * 100:.1f}%")
+
+
+def test_the_asymptotics_figure_quotes_the_trend_its_own_csv_gives():
+    """plot_asymptotics.py's conclusion -- the deep-antiferroelectric slowdown
+    is not a power law -- rests on a control comparison whose statistics were
+    quoted in prose and computed nowhere. Both were wrong.
+
+    The p-value was a NORMAL tail on five points. The note read "+2.06 +- 0.68,
+    p=0.002"; the ratio 2.06/0.68 = 3.03 gives 0.0025 as a two-sided normal
+    tail and 0.056 on the three degrees of freedom six sizes actually leave.
+    Overstated by a factor of twenty, and across 0.05 on the way.
+
+    And the slope did not reproduce from the CSV shipped beside it: the data
+    gives +3.49 +- 1.27 at Delta=-4 and +0.69 +- 0.46 at Delta=-1, against the
+    quoted +2.06 and +0.21. The numbers came from data that is no longer here.
+
+    So the statistic lives in local_exponent_trend() now, the script prints
+    it, and this test refits the shipped CSV through that same function and
+    holds the docstring to it -- including the degrees of freedom, since that
+    is where the first error was.
+    """
+    import csv
+    import importlib.util
+    import pathlib
+    import re
+    from collections import defaultdict
+
+    import matplotlib
+    matplotlib.use("Agg")
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    mod_path = root / "experiments" / "plot_asymptotics.py"
+    spec = importlib.util.spec_from_file_location("_pa", mod_path)
+    pa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pa)
+
+    rows = list(csv.DictReader(open(root / "experiments" / "asym_sample.csv")))
+    by = defaultdict(list)
+    for r in rows:
+        by[float(r["delta"])].append(
+            (float(r["n"]), float(r["median_tau"]), float(r["lo"]),
+             float(r["hi"])))
+
+    doc = mod_path.read_text()
+    got = {}
+    for d, v in by.items():
+        v = sorted(v)
+        arrs = [np.array([x[i] for x in v], dtype=float) for i in range(4)]
+        slope, se, pval, al = pa.local_exponent_trend(*arrs)
+        got[d] = (slope, se, pval, len(al) - 2)
+
+    assert set(got) == {-1.0, -4.0}, sorted(got)
+
+    for d in (-1.0, -4.0):
+        slope, se, pval, df = got[d]
+        m = re.search(
+            rf"Delta = {d:+.0f}\s+local-exponent trend\s+([+-][\d.]+) \+- "
+            rf"([\d.]+),\s+p = ([\d.]+)", doc)
+        assert m, f"the Delta={d:+.0f} trend line is no longer in the docstring"
+        assert abs(slope - float(m.group(1))) < 0.01, (d, slope, m.group(1))
+        assert abs(se - float(m.group(2))) < 0.01, (d, se, m.group(2))
+        assert abs(pval - float(m.group(3))) < 0.002, (d, pval, m.group(3))
+        assert df == 3, (d, df)
+
+    # the control must be flatter than the deep case, which is the whole
+    # point of running it
+    assert got[-4.0][0] > 3 * got[-1.0][0], (
+        f"the Delta=-4 trend ({got[-4.0][0]:+.2f}) is no longer steeply above "
+        f"the Delta=-1 control ({got[-1.0][0]:+.2f}); the figure's argument "
+        f"has gone")
+
+    # and the note must not have drifted back to claiming significance
+    assert got[-4.0][2] > 0.05, (
+        "the Delta=-4 trend is now significant at 0.05; update the docstring, "
+        "which currently says it is not")
+    # The old p=0.002 still appears in the docstring, in the paragraph
+    # explaining that it was a normal tail -- which is the right place for
+    # it, so a bare substring ban would fire on the correction itself. The
+    # trend-line assertions above already pin every number presented AS a
+    # claim; what is checked here is that the correction is still there and
+    # that the limitation is still stated.
+    # whitespace-normalised, because the docstring is wrapped and a phrase
+    # that spans a line break is not a substring of the raw text
+    flat = " ".join(doc.split())
+    for phrase in ("significant at 0.05 and this note must not pretend",
+                   "was a NORMAL tail",
+                   "did not reproduce"):
+        assert phrase in flat, (
+            f"the docstring no longer records {phrase!r}; the numbers above "
+            f"would then read as if they had always been right")
