@@ -20,10 +20,15 @@ domain carrying 2889 configurations at each Delta:
     Delta = +0.5, 0, -1, -3, -5   x   square N=4, stair N=4,
                                       stair N=6, plus N=6, notch N=6
 
-The region is also sharp. Walking a across the C >= A boundary at b=c=1, the
-coupling is monotone at a=1.00 (where A=C exactly) and fails at a=1.05; the
-same holds for b across C >= B. So the condition is not over-conservative --
-it is exactly the set where the coupling works.
+The region is also sharp, and sharper than an earlier version of this note
+said. Walking a across the C >= A boundary at b=c=1, the exhaustive check on
+the square N=4 gives monotone at a=0.95 and a=1.00 (where A=C exactly) and NOT
+monotone already at a=1.01 -- the note used to cite 1.05, which is simply the
+first value that had been tried. The same holds for b across C >= B (monotone
+at 1.00, violated at 1.05). So the condition is not over-conservative: it is
+exactly the set where the coupling works, with the failure starting at the
+boundary rather than somewhere past it. Asserted in the test suite, not only
+here.
 """
 from __future__ import annotations
 

@@ -70,8 +70,18 @@ def main():
             prev = None
             for n in args.n:
                 taus, cens = [], 0
-                # disjoint seed block per (Delta, n)
-                base = 3_000_000 + int(abs(d) * 1000) * 1000 + n
+                # Disjoint seed block per (Delta, n). It used to be
+                # `... + n`, which made consecutive sizes share 32 of their
+                # 40 seeds (n=32 used base+32..71, n=40 used base+40..79) --
+                # and _rand_field draws prod(shape) values from a stream keyed
+                # only on (seed, k), so a shared seed hands n=32 and n=40 the
+                # same random prefix at every sweep. Measured at Delta=-1,
+                # n=16 vs 20, 60 seeds: Spearman rho 0.14 (p=0.29) on shared
+                # seeds against -0.12 (p=0.37) on disjoint ones, so the
+                # overlap did not in fact correlate the coalescence times and
+                # asym_sample.csv is not in question. The blocks are made
+                # disjoint anyway, so the comment is true of the code.
+                base = 3_000_000 + int(abs(d) * 1000) * 1000 + 1000 * n
                 for s in range(args.seeds):
                     t = forward_coalescence_time(n, w, seed=base + s,
                                                  max_sweeps=args.max_sweeps)

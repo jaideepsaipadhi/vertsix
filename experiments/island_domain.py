@@ -131,7 +131,7 @@ def main():
             cuts = [0, args.n] if k == 1 else \
                 [0, args.n // 3, 2 * args.n // 3, args.n]
             m = domain_mask(cuts, cuts, I)
-            per, areas, seps = [], [], []
+            per, areas, seps, modes = [], [], [], []
             for c in range(args.chains):
                 lv, area, sep = chain_levels(m, w, args.meas, args.thin,
                                              seed=60_000 + c,
@@ -141,10 +141,22 @@ def main():
                     continue
                 vals, cnts = np.unique(good, return_counts=True)
                 mode = vals[np.argmax(cnts)]
+                modes.append(float(mode))
                 per.append(((good == mode - 2).sum(), (good == mode).sum(),
                             (good == mode + 2).sum()))
                 areas.append(area / m.sum())
                 seps.append(sep)
+            # The mode above is taken PER CHAIN, and the sums below pool the
+            # cell counts across chains, so they are only comparable while
+            # every chain picked the same reference level. Measured clean on
+            # the square and the notch at n=24 (8 chains, identical modes), so
+            # this is a guard rather than a fix -- but a silent disagreement
+            # would pool counts about different levels and the batch-means
+            # error would average two different observables.
+            if len(set(modes)) > 1:
+                print(f"  WARNING: {name}: chains disagree on the modal level "
+                      f"{sorted(set(modes))}; the pooled ratios below mix "
+                      f"reference levels and should not be trusted")
             P = np.array(per, float)
             R_lo = P[:, 0].sum() / P[:, 1].sum()
             R_hi = P[:, 2].sum() / P[:, 1].sum()

@@ -62,6 +62,16 @@ The equivalent independent-sampling run -- 7e5 exact CFTP samples at n=32,
 of roughly 200: about 45x from replacing independent samples with one
 stationary chain, and about another 4-5x from measuring at n=16.
 
+CENTRING. The three cells counted are mode-1, mode, mode+1, with the mode read
+off the pooled data rather than fixed at 0. k = (G - n/2)/2 and G moves in
+steps of 2, so k's offset is set by n mod 4: integer at 0 mod 4, half-integer
+at 2 mod 4, quarter-integer at odd n. The cells used to be the literal -1, 0,
++1, which is right only at n = 0 mod 4; at n = 18 every observation falls
+outside all three (the occupied levels are -0.5 and +0.5) and the script
+printed mu = sigma = nan with no complaint. It now also says so out loud when
+one of the three cells is empty, which at 2 mod 4 is the normal state at
+moderate sample sizes -- two occupied cells identify neither parameter.
+
 Thinning: observations are taken every --thin sweeps. Information is set by
 total sweeps, not by how often the island is measured, so --thin is tuned only
 so the island computation stays a small fraction of the cost (about 8% at the
@@ -101,6 +111,25 @@ def chain_observations(n, w, nmeas, thin, seed, start_seed):
         r = island(Hf.reshape(size, size).astype(np.int64), n)
         out[t] = np.nan if r["k"] is None else r["k"]
     return out
+
+
+def pooled_mode(all_ks):
+    """The most-occupied k cell, pooled across chains.
+
+    NOT hardcoded to 0. k = (G - n/2)/2 with G moving in steps of 2, so the
+    offset depends on n mod 4: integer at n = 0 mod 4, half-integer at 2 mod 4,
+    quarter-integer at odd n. This script used to count the cells -1, 0 and +1
+    literally, which at n = 18 put every observation outside all three (the
+    values are -0.5 and +0.5) and reported mu = sigma = nan with no complaint.
+    The spacing is 1 at every n, so mode +- 1 are the neighbours once the mode
+    itself is read off the data.
+    """
+    ks = np.concatenate([np.asarray(k, float) for k in all_ks])
+    ks = ks[~np.isnan(ks)]
+    if ks.size == 0:
+        return float("nan")
+    vals, cnt = np.unique(ks, return_counts=True)
+    return float(vals[int(np.argmax(cnt))])
 
 
 def mu_sigma_from_ratios(r_lo, r_hi):
@@ -150,25 +179,41 @@ def main():
 
     w = weights_for_delta(args.delta)
     t0 = time.time()
+    chains = []
+    for c in range(args.chains):
+        chains.append(chain_observations(args.n, w, args.meas, args.thin,
+                                         seed=10_000 + c, start_seed=20_000 + c))
+        print(f"  chain {c:3d} swept   [{time.time()-t0:5.0f}s]", flush=True)
+
+    mode = pooled_mode(chains)
+    print(f"\n  mode cell k={mode:+.2f} (n={args.n}, n mod 4 = {args.n % 4}); "
+          f"neighbours {mode - 1:+.2f} and {mode + 1:+.2f}")
+
     per = []
     with open(args.out, "w", newline="") as fh:
         wr = csv.writer(fh)
-        wr.writerow(["n", "delta", "chain", "k_lo", "k_mode", "k_hi", "meas", "thin"])
-        for c in range(args.chains):
-            ks = chain_observations(args.n, w, args.meas, args.thin,
-                                    seed=10_000 + c, start_seed=20_000 + c)
-            mode = 0.0
+        wr.writerow(["n", "delta", "chain", "k_lo", "k_mode", "k_hi", "meas",
+                     "thin", "mode"])
+        for c, ks in enumerate(chains):
             lo = int((ks == mode - 1).sum())
             mo = int((ks == mode).sum())
             hi = int((ks == mode + 1).sum())
             per.append((lo, mo, hi))
-            wr.writerow([args.n, args.delta, c, lo, mo, hi, args.meas, args.thin])
-            fh.flush()
-            print(f"  chain {c:3d}: k=-1 {lo:6d}  k=0 {mo:6d}  k=+1 {hi:4d}"
-                  f"   [{time.time()-t0:5.0f}s]", flush=True)
+            wr.writerow([args.n, args.delta, c, lo, mo, hi, args.meas,
+                         args.thin, mode])
+            print(f"  chain {c:3d}: k={mode-1:+.2f} {lo:6d}  k={mode:+.2f} {mo:6d}"
+                  f"  k={mode+1:+.2f} {hi:4d}", flush=True)
+        fh.flush()
+
+    seen = sum(np.sum(~np.isnan(k)) for k in chains)
+    covered = sum(x for row in per for x in row)
+    if seen and covered < 0.9 * seen:
+        print(f"  WARNING: the three cells hold only {covered}/{seen} of the "
+              f"observations -- the centring is probably wrong")
 
     s = summarise(per)
     el = time.time() - t0
+
     print(f"\n  n={args.n}  Delta={args.delta:+.1f}   "
           f"{args.chains} chains x {args.meas} obs x {args.thin} sweeps "
           f"= {args.chains*args.meas*args.thin:,} sweeps in {el:.0f}s")
@@ -178,6 +223,18 @@ def main():
     if s["se_hi"] > 0 and s["R_hi"] > 0:
         print(f"     relative precision on the k=+1 cell: "
               f"{100*s['se_hi']/s['R_hi']:.0f}%")
+    empty = [name for name, tot in (("k=mode-1", sum(p[0] for p in per)),
+                                    ("k=mode",   sum(p[1] for p in per)),
+                                    ("k=mode+1", sum(p[2] for p in per)))
+             if tot == 0]
+    if empty:
+        print(f"\n  CANNOT SOLVE for (mu, sigma): the cell(s) {', '.join(empty)} "
+              f"are empty.\n  The closed form needs all three consecutive cells "
+              f"occupied -- two cells fix\n  neither parameter. At n = 2 mod 4 "
+              f"this is the usual state of affairs at\n  moderate sample sizes: "
+              f"the lattice offset puts the mode next to one\n  populated "
+              f"neighbour and one far tail, so the ratios are reported but mu\n"
+              f"  and sigma are not identified. Sample longer or use n = 0 mod 4.")
 
     if args.validate:
         print("\n  VALIDATION against independent CFTP sampling")

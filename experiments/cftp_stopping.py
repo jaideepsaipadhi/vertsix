@@ -24,6 +24,12 @@ earlier start. The doubling run therefore brackets T* between the last power
 of two that failed and the first that succeeded, and bisection inside that
 bracket finds it. (A test asserts the monotonicity rather than trusting it.)
 
+That argument needs the coupling to be monotone, and the absolute-time
+indexing alone is not enough: what is tracked is whether the two EXTREMAL
+chains agree, which certifies a constant composed map only while they cannot
+cross. Outside the monotone region they can, and the predicate measurably
+loses monotonicity in T, so cftp_stopping_time refuses there.
+
 T* is NOT the forward coalescence time and the two answer different
 questions: T* is what the sampler pays, the forward time is a property of the
 coupling. Both are reported here so the difference is visible rather than
@@ -39,7 +45,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import sixvertex.cftp_exact as ce
 from sixvertex.cftp_exact import (_colour_indices, _rand_field, _weight_table,
-                                  extremal_height)
+                                  extremal_height, in_monotone_region)
 from experiments.mixing import forward_coalescence_time, weights_for_delta
 
 
@@ -60,7 +66,24 @@ def _coalesces_from(n, w, seed, T, tbl, colour_idx, size):
 
 
 def cftp_stopping_time(n, w, seed, max_T=1 << 20):
-    """The exact T*, by doubling then bisection. Returns None if censored."""
+    """The exact T*, by doubling then bisection. Returns None if censored.
+
+    Refused outside the monotone region, for the same reason
+    forward_coalescence_time is: there the two extremal chains can cross, so
+    their agreeing no longer certifies that the composed map is constant, and
+    -- measured, not assumed -- agreement stops being monotone in T. At
+    a1=a2=b1=b2=1, c1=c2=0.9, n=8, 15 of 40 seeds coalesce from -T and then
+    fail to coalesce from -(T+1). Bisection on a non-monotone predicate
+    returns whichever side of the bracket it happens to land on, so this used
+    to hand back a confident wrong number (446 at c=0.5, n=8, seed 0) rather
+    than refusing.
+    """
+    if not in_monotone_region(w):
+        raise ValueError(
+            "the CFTP stopping time is only defined where the coupling is "
+            "monotone (c1c2 >= a1a2 and c1c2 >= b1b2); outside it the chains "
+            "can cross, coalescence is not monotone in T, and the bisection "
+            "that finds T* is invalid")
     tbl = _weight_table(w)
     colour_idx, size = _colour_indices(n)
 

@@ -6059,3 +6059,113 @@ def test_the_island_lattice_claim_is_qualified_by_n_mod_four():
     assert all(abs(k - round(k)) > 0.1 for k in ks), (
         f"k came out integer valued at n=34 (n%4=2): {sorted(set(ks))} -- "
         f"either the centring changed or this test is now vacuous")
+
+
+def test_the_stopping_time_refuses_weights_where_its_bisection_is_invalid():
+    """cftp_stopping_time rests on coalescence being monotone in T.
+
+    That holds inside the monotone region and fails outside it, because what
+    the predicate tracks is whether the two EXTREMAL chains agree, which
+    certifies a constant composed map only while they cannot cross. The
+    function used to accept any weights and bisect anyway, handing back a
+    confident number; its sibling forward_coalescence_time has always refused.
+
+    Both halves are asserted: that a violation really exists off-region (or
+    the refusal would be cosmetic), and that the refusal happens.
+    """
+    import pytest
+
+    from experiments.cftp_stopping import _coalesces_from, cftp_stopping_time
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import (_colour_indices, _weight_table,
+                                      in_monotone_region)
+
+    off = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=0.9, c2=0.9)
+    assert not in_monotone_region(off)
+
+    n = 8
+    tbl = _weight_table(off)
+    colour_idx, size = _colour_indices(n)
+    violations = 0
+    for seed in range(12):
+        flags = [_coalesces_from(n, off, seed, T, tbl, colour_idx, size)
+                 for T in range(1, 70)]
+        if flags != sorted(flags):
+            violations += 1
+    assert violations > 0, (
+        "no seed showed coalescence turning back off as T grew, so this test "
+        "no longer demonstrates why the refusal is needed")
+
+    with pytest.raises(ValueError, match="monotone"):
+        cftp_stopping_time(n, off, 0)
+
+    # and it still works where it is defined
+    assert cftp_stopping_time(n, weights_for_delta(-2.0), 900) >= 1
+
+
+def test_the_monotone_region_is_sharp_under_the_exhaustive_check():
+    """The region is not just sufficient -- the coupling fails outside it.
+
+    monotone_check.py's exhaustive single-site check (every ordered pair of
+    configurations, every site, every threshold of the driving uniform) is the
+    decisive instrument, and its docstring claimed sharpness without anything
+    asserting it. Pinned here on both sides of the C >= A and C >= B walls, at
+    the smallest step that crosses them -- a = 1.01 rather than the 1.05 the
+    note used to cite.
+    """
+    from experiments.monotone_check import monotonicity_violations
+    from sixvertex.cftp_exact import in_monotone_region
+    from sixvertex.domains import domain_mask
+
+    m = domain_mask([0, 4], [0, 4], [[1]])
+
+    def monotone(**kw):
+        w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=1.0)
+        w.update(kw)
+        return in_monotone_region(w), not monotonicity_violations(m, w)
+
+    # on the C = A face: monotone, and the predicate agrees
+    assert monotone() == (True, True)
+    assert monotone(a1=0.95, a2=0.95) == (True, True)
+    # one percent outside either wall and the coupling is already broken
+    assert monotone(a1=1.01, a2=1.01) == (False, False), (
+        "the coupling is still monotone just outside C >= A, so the region is "
+        "conservative rather than sharp -- or the check stopped working")
+    assert monotone(b1=1.05, b2=1.05) == (False, False)
+
+
+def test_the_shift_chain_centres_its_cells_on_the_data_not_on_zero():
+    """run_shift_chain counted the literal cells -1, 0, +1.
+
+    That is the right triple only at n = 0 mod 4. k = (G - n/2)/2 with G in
+    steps of 2, so at n = 2 mod 4 the occupied levels are half-integers and
+    every observation fell outside all three cells: R_lo and R_hi came out
+    0/0 and the script printed mu = sigma = nan without complaint.
+    """
+    import numpy as np
+
+    from experiments.mixing import weights_for_delta
+    from experiments.run_shift_chain import chain_observations, pooled_mode
+
+    w = weights_for_delta(-3.0)
+    seen = {}
+    for n in (16, 18):
+        ks = chain_observations(n, w, 60, 8, seed=1, start_seed=2)
+        seen[n] = ks[~np.isnan(ks)]
+        assert seen[n].size, f"no island found at n={n}"
+
+    # the data-driven mode is a value that actually occurs, at both residues
+    for n, ks in seen.items():
+        mode = pooled_mode([ks])
+        assert mode in set(ks.tolist()), (n, mode, sorted(set(ks.tolist())))
+        covered = int(((ks == mode - 1) | (ks == mode) | (ks == mode + 1)).sum())
+        assert covered == ks.size, (
+            f"n={n}: the three cells around the mode {mode} hold {covered} of "
+            f"{ks.size} observations, so the spacing is not 1")
+
+    # and the old hardcoded triple really did miss everything at n = 18
+    ks18 = seen[18]
+    hardcoded = int(((ks18 == -1) | (ks18 == 0) | (ks18 == 1)).sum())
+    assert hardcoded == 0, (
+        "n=18 now lands on integer k, so this test no longer demonstrates why "
+        "the centring has to come from the data")
