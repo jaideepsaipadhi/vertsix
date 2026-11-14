@@ -8167,3 +8167,64 @@ def test_the_browser_chain_threshold_is_exact_to_machine_precision():
             f"makes the browser chain flip exactly that site at exactly its "
             f"computed threshold, so its acceptance probability disagrees "
             f"with the weights")
+
+
+def test_the_public_dispatch_behaves_the_same_on_both_sides_of_its_boundary():
+    """sixvertex.sample() is the API a collaborator calls; it was inconsistent.
+
+    The sequential route forwards **weights into exact_sample, whose signature
+    defaults every weight to 1.0, so a partial dict was silently completed
+    with ones -- a sample from a DIFFERENT measure than was asked for, with no
+    complaint. The CFTP route instead raised a bare KeyError from
+    in_monotone_region. Measured before the fix:
+
+        sample(4,  {"c1": 2, "c2": 2})  ->  returned a sample, method=exact-sequential
+        sample(16, {"c1": 2, "c2": 2})  ->  KeyError: 'a1'
+
+    The same call, behaving differently either side of n = MAX_EXACT_N, and the
+    quiet half being the dangerous one: a typo in a weight name gave a
+    plausible picture from the wrong measure.
+
+    This pins the whole routing table as well, since that is what the
+    docstring promises and nothing checked end to end.
+    """
+    import pytest
+
+    import sixvertex as sv
+
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.6, c2=1.6)
+    small, big = 4, sv.MAX_EXACT_N + 2
+    assert small <= sv.MAX_EXACT_N < big
+
+    # the routing table, and the info["method"] contract PACKAGE.md documents
+    _H, info = sv.sample(small, w, seed=1)
+    assert info["method"] == "exact-sequential", info
+    _H, info = sv.sample(big, w, seed=1)
+    assert info["method"] == "cftp", info
+    _H, info = sv.sample(small, w, seed=1, method="cftp")
+    assert info["method"] == "cftp", "method='cftp' was overridden by size"
+    _H, info = sv.sample(small, w, seed=1, method="sequential")
+    assert info["method"] == "exact-sequential", info
+
+    with pytest.raises(ValueError, match="unknown method"):
+        sv.sample(small, w, method="metropolis")
+    with pytest.raises(ValueError, match="limited to n"):
+        sv.sample(big, w, method="sequential")
+
+    # outside the monotone region: small n still works, large n is refused
+    off = dict(a1=1.5, a2=1.5, b1=1.0, b2=1.0, c1=1.0, c2=1.0)
+    assert not sv.in_monotone_region(off)
+    _H, info = sv.sample(small, off, seed=1)
+    assert info["method"] == "exact-sequential", (
+        "the sequential sampler works at ANY weights; it must still be used "
+        "below the size limit when CFTP cannot be")
+    with pytest.raises(ValueError, match="no exact method available"):
+        sv.sample(big, off, seed=1)
+
+    # and a partial or mistyped weight dict is refused the SAME way on both
+    # sides, rather than silently defaulting on one of them
+    for n in (small, big):
+        with pytest.raises(ValueError, match="exactly a1, a2, b1, b2, c1, c2"):
+            sv.sample(n, {"c1": 2.0, "c2": 2.0}, seed=1)
+        with pytest.raises(ValueError, match="unexpected"):
+            sv.sample(n, dict(w, c_1=2.0), seed=1)

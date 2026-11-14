@@ -75,6 +75,28 @@ def sample(n, weights, seed=None, method="auto"):
     if method not in ("auto", "sequential", "cftp"):
         raise ValueError(f"unknown method {method!r}")
 
+    # All six weights are required, and the reason is a real inconsistency
+    # this used to have. The sequential route forwards **weights to
+    # exact_sample, whose signature defaults each one to 1.0, so a partial
+    # dict was silently completed with ones -- a sample from a DIFFERENT
+    # measure than the caller asked for, with no complaint. The CFTP route
+    # instead hit a bare KeyError from in_monotone_region. So
+    # sample(4, {"c1": 2, "c2": 2}) returned a uniform-ish picture while
+    # sample(16, {"c1": 2, "c2": 2}) raised KeyError: 'a1' -- the same call
+    # behaving differently either side of the routing boundary, and the
+    # quieter half being the dangerous one.
+    _need = ("a1", "a2", "b1", "b2", "c1", "c2")
+    missing = [k for k in _need if k not in weights]
+    extra = [k for k in weights if k not in _need]
+    if missing or extra:
+        raise ValueError(
+            "weights must give exactly a1, a2, b1, b2, c1, c2"
+            + (f"; missing {missing}" if missing else "")
+            + (f"; unexpected {extra}" if extra else "")
+            + ". They are not defaulted here: a partial dict used to be "
+              "completed with ones on one routing branch and to raise "
+              "KeyError on the other.")
+
     if method == "sequential" or (method == "auto" and n <= MAX_EXACT_N):
         if n > MAX_EXACT_N:
             raise ValueError(

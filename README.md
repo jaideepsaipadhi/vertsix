@@ -141,13 +141,27 @@ Controls:
 ## Files
 
 ```
-sixvertex/sampler.py                General-weight MCMC engine (torch + numpy fallback), CFTP-only in production
-sixvertex/cftp.py                    Coupling From The Past exact sampler (restricted regime, see below)
-server.py                            Flask app: /api/exact/start + /api/exact/status (CFTP), static hosting
-static/sixvertex.js                  Client-side live sampling engine (mirrors sampler.py's verified dynamics)
-static/index.html, style.css, draw.js   Browser UI
+sixvertex/__init__.py      public API: sample(), delta(), MAX_EXACT_N
+sixvertex/exact.py         sequential exact sampler (transfer matrix); ANY weights, n <= MAX_EXACT_N
+sixvertex/cftp_exact.py    CFTP on DWBC, general weights inside c1c2 >= a1a2, c1c2 >= b1b2
+sixvertex/domains.py       general Gorin-Kenyon domains: masks, boundary heights, CFTP
+sixvertex/stochastic.py    stochastic six-vertex model, exact in one sweep, Delta >= 1
+sixvertex/sampler.py       general-weight MCMC engine (torch + numpy fallback); the live view
+sixvertex/cftp.py          LEGACY. Correct at c1 = c2 = 1 and nowhere else; nothing calls it.
+                           Kept only because tests pin the defect it documents.
+server.py                  Flask app: /api/init, /api/step, /api/config,
+                           /api/exact/start, /api/domain/start, /api/stochastic
+static/sixvertex.js        client-side live chain (independent of sampler.py)
+static/draw.js             rendering, views, exports, the equilibration badge
+static/index.html, style.css   browser UI
+experiments/               measurement campaigns and the brute-force oracles
+tests/test_sampler.py      the suite
 requirements.txt
 ```
+
+This list was stale for a long time: it named two of the six modules and two
+of the six endpoints, and called cftp.py "the CFTP exact sampler" when that is
+the legacy one nothing calls.
 
 ## Exact sampling
 
