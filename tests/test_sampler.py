@@ -8329,3 +8329,84 @@ def test_the_two_cftp_chains_start_from_the_extremal_heights_the_definition_give
             f"{int((lo[interior] == hi[interior]).sum())} interior corners, "
             f"where coalescence certifies nothing")
         assert int((lo < hi).sum()) == (n - 1) ** 2, n
+
+
+def test_every_third_party_import_in_the_repository_is_a_declared_dependency():
+    """A dependency nobody declared is a clone that does not run.
+
+    This was found, not supposed. scipy is imported in twelve places in this
+    file and at module level in eight of the experiments/ scripts, and pytest
+    runs the suite -- and neither appeared in pyproject.toml's dependencies or
+    in any of its extras. `pip install vertsix[dev]` got mpmath and matplotlib
+    and then failed on `from scipy import ndimage`. The reason it went unseen
+    is that the container this was developed in has scipy preinstalled, so the
+    only machine where it mattered was somebody else's.
+
+    The check is a census, computed both ways rather than quoted:
+
+      * every `import X` / `from X import ...` in every .py file under the
+        repository is collected by walking the AST, so a string that merely
+        mentions a module name cannot register and a real import cannot hide
+        in a function body (which is exactly where scipy's were);
+      * stdlib names are removed with sys.stdlib_module_names, not a hand
+        list that would go stale;
+      * what remains must appear in pyproject.toml's dependencies or in one
+        of its optional-dependency extras.
+
+    So adding a new import of anything without declaring it fails here. The
+    converse -- a declared package nobody imports -- is deliberately NOT
+    asserted: gunicorn is a dependency of the Procfile, never of an import.
+
+    Needs tomllib and sys.stdlib_module_names, so it skips below 3.11. The
+    project supports 3.9, but this test guards against drift introduced
+    HERE, and development does not happen on 3.9.
+    """
+    import ast
+    import pathlib
+    import re
+    import sys
+
+    import pytest
+
+    if sys.version_info < (3, 11):
+        pytest.skip("needs tomllib (3.11) and sys.stdlib_module_names (3.10)")
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    meta = tomllib.loads((root / "pyproject.toml").read_text())
+    proj = meta["project"]
+    declared = set()
+    for spec in (list(proj.get("dependencies", []))
+                 + [s for v in proj.get("optional-dependencies", {}).values()
+                    for s in v]):
+        declared.add(re.split(r"[<>=!~\[; ]", spec, maxsplit=1)[0].strip().lower())
+    assert declared, "parsed no dependencies at all out of pyproject.toml"
+
+    local = {p.stem for p in root.rglob("*.py")} | {
+        d.name for d in root.iterdir() if (d / "__init__.py").exists()}
+    local |= {"experiments", "tests", "sixvertex"}
+
+    found = {}
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module] if (node.module and node.level == 0) else []
+            else:
+                continue
+            for name in names:
+                top = name.split(".")[0]
+                if (top in sys.stdlib_module_names or top in local
+                        or top == "__future__"):
+                    continue
+                found.setdefault(top.lower(), set()).add(
+                    str(path.relative_to(root)))
+
+    assert "numpy" in found, "the AST walk found no numpy import; it is broken"
+    undeclared = {m: sorted(f) for m, f in found.items() if m not in declared}
+    assert not undeclared, (
+        "imported but declared in no pyproject dependency or extra: "
+        + "; ".join(f"{m} ({len(f)} files, e.g. {f[0]})"
+                    for m, f in sorted(undeclared.items())))
