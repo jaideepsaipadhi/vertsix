@@ -9431,21 +9431,30 @@ def test_the_asymptotics_figure_quotes_the_trend_its_own_csv_gives():
     for d, v in by.items():
         v = sorted(v)
         arrs = [np.array([x[i] for x in v], dtype=float) for i in range(4)]
-        slope, se, pval, al = pa.local_exponent_trend(*arrs)
-        got[d] = (slope, se, pval, len(al) - 2)
+        slope, se, pval, gof, dof, al = pa.local_exponent_trend(*arrs)
+        got[d] = (slope, se, pval, gof, dof)
 
     assert set(got) == {-1.0, -4.0}, sorted(got)
 
     for d in (-1.0, -4.0):
-        slope, se, pval, df = got[d]
+        slope, se, pval, gof, dof = got[d]
         m = re.search(
-            rf"Delta = {d:+.0f}\s+local-exponent trend\s+([+-][\d.]+) \+- "
-            rf"([\d.]+),\s+p = ([\d.]+)", doc)
+            rf"Delta = {d:+.0f}\s+([+-][\d.]+) \+- ([\d.]+),\s+p = ([\d.]+)"
+            rf"\s+line fit chi2 ([\d.]+)/(\d)", doc)
         assert m, f"the Delta={d:+.0f} trend line is no longer in the docstring"
         assert abs(slope - float(m.group(1))) < 0.01, (d, slope, m.group(1))
         assert abs(se - float(m.group(2))) < 0.01, (d, se, m.group(2))
-        assert abs(pval - float(m.group(3))) < 0.002, (d, pval, m.group(3))
-        assert df == 3, (d, df)
+        assert abs(pval - float(m.group(3))) < 0.001, (d, pval, m.group(3))
+        assert abs(gof - float(m.group(4))) < 0.02, (d, gof, m.group(4))
+        assert dof == int(m.group(5)) == 3, (d, dof, m.group(5))
+
+        # the z is only meaningful while the line explains the scatter at the
+        # quoted sigmas; if it stops doing so, neither p means anything
+        from scipy.stats import chi2 as _c
+        assert _c.sf(gof, dof) > 0.05, (
+            f"at Delta={d:+.0f} the fitted line no longer describes the "
+            f"scatter (chi2 {gof:.2f} on {dof} dof); the quoted sigmas are "
+            f"too small and the p-value above is not interpretable")
 
     # the control must be flatter than the deep case, which is the whole
     # point of running it
@@ -9454,10 +9463,19 @@ def test_the_asymptotics_figure_quotes_the_trend_its_own_csv_gives():
         f"the Delta=-1 control ({got[-1.0][0]:+.2f}); the figure's argument "
         f"has gone")
 
-    # and the note must not have drifted back to claiming significance
-    assert got[-4.0][2] > 0.05, (
-        "the Delta=-4 trend is now significant at 0.05; update the docstring, "
-        "which currently says it is not")
+    # the deep case is significant and the control is not -- which is the
+    # whole shape of the argument, and the direction my own first correction
+    # of this test got backwards by using t where z belongs
+    assert got[-4.0][2] < 0.05 < got[-1.0][2], (
+        f"Delta=-4 p={got[-4.0][2]:.4f}, Delta=-1 p={got[-1.0][2]:.4f}; the "
+        f"figure needs the deep case significant and the control not")
+
+    # the test must be a z on known per-point sigmas, not a t
+    src = mod_path.read_text()
+    assert "_norm.sf" in src, "the slope p-value is no longer a normal tail"
+    assert "_t.cdf" not in src, (
+        "Student's t is back; it is the right reference only when one sigma "
+        "is estimated from residuals, and here each point carries its own")
     # The old p=0.002 still appears in the docstring, in the paragraph
     # explaining that it was a normal tail -- which is the right place for
     # it, so a bare substring ban would fire on the correction itself. The
@@ -9467,8 +9485,8 @@ def test_the_asymptotics_figure_quotes_the_trend_its_own_csv_gives():
     # whitespace-normalised, because the docstring is wrapped and a phrase
     # that spans a line break is not a substring of the raw text
     flat = " ".join(doc.split())
-    for phrase in ("significant at 0.05 and this note must not pretend",
-                   "was a NORMAL tail",
+    for phrase in ("took two attempts",
+                   "in the opposite direction from the original",
                    "did not reproduce"):
         assert phrase in flat, (
             f"the docstring no longer records {phrase!r}; the numbers above "

@@ -17,32 +17,37 @@ failing rather than the model. Running the identical pipeline at Delta=-1,
 where the exponent is known to be flat, tests that. Recomputed from the CSV
 shipped beside this script by local_exponent_trend() below:
 
-    Delta = -1     local-exponent trend  +0.69 +- 0.46,  p = 0.230
-    Delta = -4     local-exponent trend  +3.49 +- 1.27,  p = 0.071
+    Delta = -1     +0.69 +- 0.46,  p = 0.133    line fit chi2 4.31/3, p = 0.23
+    Delta = -4     +3.49 +- 1.27,  p = 0.0060   line fit chi2 1.59/3, p = 0.66
 
-The control is flat and Delta=-4 trends up about five times as steeply, which
-is the comparison panel (b) is for. But p = 0.071 is not significant at 0.05
-and this note must not pretend otherwise: with six sizes there are five local
-exponents and three degrees of freedom, and a trend that direction on that
-little data is suggestive, not established. Panel (a) carries the argument --
-a power law fitted on n <= 48 tracks Delta=-1 to n=80 and visibly fails to
-track Delta=-4 -- and panel (b) supports it.
+The control is flat and Delta=-4 trends up about five times as steeply, at
+p = 0.006. The second column is what licenses reading the first: each local
+exponent carries a standard error propagated from the CSV's bootstrap
+intervals, and the fitted line's chi-square says the scatter about it is
+consistent with those errors at both Delta. If it were not, the quoted
+sigmas would be too small and the p-values would mean nothing.
 
-Two things were wrong with the numbers this paragraph used to quote, and both
-are the kind that only show up when the statistic is recomputed from the data
-rather than carried along in prose.
+Panel (a) still carries the argument -- a power law fitted on n <= 48 tracks
+Delta=-1 out to n=80 and visibly fails to track Delta=-4 -- and panel (b)
+supports it with a number.
 
-The p-value was a NORMAL tail. It read "+2.06 +- 0.68, p=0.002", and 2.06/0.68
-= 3.03 gives 0.0025 as a two-sided normal tail and 0.056 on the three degrees
-of freedom actually available. A normal approximation on five points
-overstated the significance by a factor of twenty and carried the claim across
-0.05 in the process.
+The slope this paragraph used to quote did not reproduce. It read "+2.06 +-
+0.68, p=0.002" where the CSV in this repository gives +3.49 +- 1.27 at
+Delta=-4 and +0.69 +- 0.46 at Delta=-1. Those figures came from data that is
+no longer the data here, which is why local_exponent_trend() computes them
+now, the script prints them on every run, and a test refits the shipped CSV
+and holds this paragraph to it.
 
-And the slope itself did not reproduce: the CSV in this repository gives +3.49
-+- 1.27 at Delta=-4 and +0.69 +- 0.46 at Delta=-1, not +2.06 and +0.21. The
-quoted figures came from data that is no longer the data here. That is why
-local_exponent_trend() now computes them and the script prints them, and why
-a test refits the shipped CSV and checks this paragraph against it.
+The p-value took two attempts and the dead end is worth recording. Seeing a
+normal tail on five points, I replaced it with Student's t on 3 degrees of
+freedom, which gave p = 0.071 and turned the result from significant to not.
+That was wrong, in the opposite direction from the original. The t
+distribution is the right reference only when a single sigma is ESTIMATED
+from the residuals; here every point carries its own sigma, known from 40
+seeds at that size, and with known per-point variances the weighted
+least-squares slope is normally distributed and b/se is a z. The real
+question behind the t -- whether the scatter exceeds what those sigmas admit
+-- is answered separately by the chi-square column, and the answer is no.
 
 No run at either Delta was censored.
 """
@@ -64,18 +69,36 @@ LOW, HIGH = (32, 48), (56, 80)
 def local_exponent_trend(n, t, lo, hi):
     """Weighted least-squares trend of the LOCAL exponent against log n.
 
-    Returns (slope, se, pvalue, local_exponents). The p-value uses
-    Student's t with len(local_exponents) - 2 degrees of freedom, which is
-    THREE here, and that matters: the docstring used to quote p=0.002 for a
-    slope/se ratio of 3.03, which is the two-sided NORMAL tail. On 3 degrees
-    of freedom the same ratio gives 0.056. A normal approximation on five
-    points overstates the significance by a factor of twenty and moves the
-    claim across 0.05.
+    Returns (slope, se, pvalue, chi2, dof, local_exponents).
+
+    The p-value is a two-sided NORMAL tail, and getting that right took two
+    attempts, so the reasoning is written down rather than left to be
+    re-derived.
+
+    Each local exponent carries its own standard error, propagated from the
+    bootstrap interval the CSV stores for every median. Those sigmas are
+    KNOWN per point -- they come from 40 seeds at that size, not from the
+    scatter of these five numbers about a line. With known per-point
+    variances the weighted-least-squares slope is normally distributed and
+    b/se is a z. Student's t with n-2 degrees of freedom is the right
+    reference only when a single common sigma is ESTIMATED from the
+    residuals, which is not what happens here. An earlier version of this
+    function used t with 3 df and reported p = 0.071 at Delta = -4; that was
+    my error in the opposite direction from the original one, and it
+    understated the result.
+
+    What the t-test was reaching for -- is the scatter bigger than the quoted
+    errors admit? -- is a real question, and it has its own answer, so the
+    fitted line's chi-square is returned alongside. If that is large the
+    quoted sigmas are too small and NEITHER p means much. Measured on the
+    committed CSV it is 1.59 on 3 dof (p = 0.66) at Delta = -4 and 4.31 on
+    3 dof (p = 0.23) at Delta = -1: the scatter is consistent with the errors,
+    so the z is the right statistic and there is no extra variance to absorb.
 
     Computed here rather than quoted, so the number in the docstring is one
     this function produced from the CSV shipped beside it.
     """
-    from scipy.stats import t as _t
+    from scipy.stats import chi2 as _chi2, norm as _norm
 
     sd = (np.log(hi) - np.log(lo)) / (2 * 1.96)
     al = np.log(t[1:] / t[:-1]) / np.log(n[1:] / n[:-1])
@@ -88,9 +111,14 @@ def local_exponent_trend(n, t, lo, hi):
     sxx = np.sum(w * (x - xb) ** 2)
     slope = float(np.sum(w * (x - xb) * (al - yb)) / sxx)
     slope_se = float(np.sqrt(1.0 / sxx))
-    df = len(al) - 2
-    pval = float(2 * (1 - _t.cdf(abs(slope / slope_se), df)))
-    return slope, slope_se, pval, al
+    pval = float(2 * _norm.sf(abs(slope / slope_se)))
+
+    # model adequacy: does the line explain the scatter at the quoted errors?
+    intercept = yb - slope * xb
+    resid = al - (intercept + slope * x)
+    dof = len(al) - 2
+    gof = float(np.sum(w * resid ** 2))
+    return slope, slope_se, pval, gof, dof, al
 
 
 def style(ax):
@@ -151,10 +179,11 @@ def main(src, dst):
                      markeredgecolor=SURFACE, markeredgewidth=1.4, zorder=4,
                      label=f"$\\Delta={d:+.0f}$")
 
-        slope, slope_se, pval, _ = local_exponent_trend(n, t, lo, hi)
+        slope, slope_se, pval, gof, dof, _ = local_exponent_trend(n, t, lo, hi)
+        from scipy.stats import chi2 as _c
         print(f"  Delta={d:+.1f}  local-exponent trend "
-              f"{slope:+.2f} +- {slope_se:.2f}, p={pval:.3f} "
-              f"(t, {len(al) - 2} df)")
+              f"{slope:+.2f} +- {slope_se:.2f}, p={pval:.4f} (z); "
+              f"line fit chi2 {gof:.2f} on {dof} dof, p={_c.sf(gof, dof):.2f}")
 
     axL.set_xscale("log"); axL.set_yscale("log")
     axL.set_xticks([32, 40, 48, 56, 64, 80])
