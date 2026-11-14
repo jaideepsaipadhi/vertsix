@@ -1769,9 +1769,18 @@ def test_compiled_sweep_matches_numpy_exactly():
     numba is optional -- without it the numpy path is used and remains the
     reference.
     """
+    import pytest
+
     import sixvertex.cftp_exact as ce
     if not ce._HAS_NUMBA:
-        return                      # nothing to compare against
+        # pytest.skip, not a bare return. A bare return here reported PASS,
+        # so on any machine without numba -- it is an optional extra -- the
+        # claim that the compiled sweep is bit-for-bit identical to the numpy
+        # reference was being reported as verified while nothing ran. Two
+        # other tests in this file had the same shape and were converted
+        # earlier; this was the straggler.
+        pytest.skip("numba is not installed; nothing to compare the numpy "
+                    "reference against")
 
     w = dict(a1=1., a2=1., b1=1., b2=1.,
              c1=math.sqrt(8), c2=math.sqrt(8))
@@ -8735,3 +8744,50 @@ def test_the_wire_names_c_up_and_c_down_land_on_the_faces_they_name():
     assert w_ == dict(a1=2.0, a2=3.0, b1=11.0, b2=13.0, c1=c_up, c2=c_down), (
         f"server._parse_request translated the wire names to {w_}; c_up must "
         f"become c1 and c_down c2, matching the constructor")
+
+
+def test_no_test_in_this_file_can_skip_itself_silently():
+    """A bare `return` in a test body reports PASS.
+
+    That is the worst failure mode a suite has: the check does not run and
+    the report says it did. Three tests in this file had it -- two converted
+    earlier, and test_compiled_sweep_matches_numpy_exactly found by this
+    sweep, where the thing silently unverified was the claim that the
+    compiled CFTP sweep is bit-for-bit identical to the numpy reference, on
+    every machine that does not have the optional numba installed.
+
+    So the class is closed rather than the instances fixed. Every `return`
+    reachable from a test function's own body -- at any nesting of if/for/try,
+    but NOT inside a nested helper, where a return is ordinary control flow --
+    is a failure here. The distinction matters: this file has a recursive
+    enumerator defined inside a test whose `return` is entirely legitimate,
+    and a sweep that could not tell the two apart would have to be switched
+    off.
+
+    Skipping is fine and there are nineteen pytest.skip sites. The point is
+    that a skip must SAY so.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).read_text()
+    offenders = []
+    for fn in ast.parse(src).body:
+        if not (isinstance(fn, ast.FunctionDef) and fn.name.startswith("test")):
+            continue
+
+        def walk(node, inside_helper=False):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                      ast.Lambda)):
+                    walk(child, True)
+                    continue
+                if isinstance(child, ast.Return) and not inside_helper:
+                    offenders.append(f"{fn.name}:{child.lineno}")
+                walk(child, inside_helper)
+
+        walk(fn)
+
+    assert not offenders, (
+        "these tests can end early and still report PASS; use pytest.skip so "
+        "the skip is visible: " + ", ".join(offenders))
