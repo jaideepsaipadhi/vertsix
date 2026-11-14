@@ -528,7 +528,13 @@ def _components(mask):
 def admits_configuration(mask):
     """Whether the domain carries any valid configuration, in polynomial time.
 
-    The criterion, verified against exhaustive enumeration on 980 domains:
+    The criterion, verified against exhaustive edge enumeration over every
+    domain reachable from a 3x3 convex array on the cut sets [0,1,2,3],
+    [0,1,2,4], [0,1,3,4], [0,2,3,4] and [0,2,4,6] -- 1078 domains, zero
+    disagreements. (This said "980 domains" and its test said "the
+    1364-domain sweep"; the two numbers disagreed and neither was
+    reproducible, since the sweep was never written down. The test now
+    performs the sweep and counts it, which takes 4 seconds.)
 
         the domain is nonempty  <=>  in EVERY connected component of the
         corner graph, the forced boundary heights are consistent and
@@ -642,11 +648,25 @@ def check_monotone_precondition(mask):
     apply. Coalescence would still happen and the sampler would still return
     an answer; it just would not be a proof of exactness.
 
-    Measured over 213 samplable domains of the Gorin-Kenyon family, every
-    domain this sampler accepts has only degree-4 free corners, and the 11
-    with lower-degree ones were already refused for having a disconnected
-    corner graph. The mechanism is that a corner of degree < 4 lies on the
-    domain boundary, and on a connected domain the boundary conditions pin it.
+    Measured over the samplable Gorin-Kenyon family reachable from 3x3 convex
+    arrays on the two cut sets [0,1,2,4] and [0,2,4,6] -- 135 domains carrying
+    1277 free corners, of which 122 are of degree 1, 2 or 3, spread over 11
+    domains. (An earlier version of this note said 213 domains and the test
+    said 1635 corners; neither reproduces from that scan, while the 122 and
+    the 11 do. The larger figures were carried over from a wider scan and
+    never updated.)
+
+    Every domain this sampler accepts has only degree-4 free corners. The
+    mechanism is that a corner of degree < 4 lies on the domain boundary, and
+    on a connected domain the boundary conditions pin it: all 11 of those
+    domains do have a disconnected corner graph (2 components each).
+
+    But that is not the check that stops them, which this note used to claim.
+    cftp_sample refuses all 11 earlier and for a different stated reason --
+    "extremal height 'hi' is not a valid configuration", 4 to 12 bad faces --
+    so the connectivity is a true property of those domains and not the
+    operative test. This function refuses all 11 as well when called directly,
+    so the belt-and-braces does work; it is simply the belt, not the braces.
 
     That is an observation across a finite scan, not a theorem, so it is
     enforced here rather than assumed. A domain that violates it gets a

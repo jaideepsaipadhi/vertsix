@@ -2326,8 +2326,12 @@ def test_experiment_observables_are_pinned():
     import os
     here = os.path.dirname(__file__)
     exp = os.path.join(here, "..", "experiments")
-    if not os.path.isdir(exp):
-        return
+    # an assertion, not a silent `return`: experiments/ is part of the
+    # repository, so its absence is a broken checkout rather than a reason to
+    # report PASS without checking anything.
+    assert os.path.isdir(exp), (
+        f"{exp} is missing; this test pins the observables defined there and "
+        f"cannot do so without it")
 
     mixing = open(os.path.join(exp, "mixing.py")).read()
     isl = open(os.path.join(exp, "island.py")).read()
@@ -2709,9 +2713,17 @@ def test_extremal_heights_leave_no_sentinels():
 def test_existence_criterion_matches_exhaustive_enumeration():
     """The polynomial-time nonemptiness test against ground truth.
 
-    Spot-checks of the 1364-domain sweep in which admits_configuration and
-    exhaustive edge enumeration agreed everywhere, including cases where two
-    earlier versions of the criterion failed in opposite directions: one
+    The whole sweep, not spot-checks: every domain reachable from a 3x3 convex
+    array on five cut sets, each compared against exhaustive edge enumeration.
+    1078 domains, zero disagreements, about 4 seconds -- there was no reason
+    for this to be eight hand-picked cases.
+
+    The module docstring claimed "980 domains" and this one claimed "the
+    1364-domain sweep". The two disagreed, and neither was reproducible
+    because the sweep was never written down; it is performed here instead.
+
+    The eight cases kept below are the historically interesting ones, where
+    two earlier versions of the criterion failed in opposite directions: one
     accepted empty domains whose disconnected pieces were never checked, the
     other rejected nonempty disconnected domains outright.
     """
@@ -2731,6 +2743,32 @@ def test_existence_criterion_matches_exhaustive_enumeration():
     for X, Y, I in cases:
         m = domain_mask(X, Y, I)
         assert admits_configuration(m) == (enumerate_edge_configs(m) > 0), (X, Y, I)
+
+    # and the full sweep
+    import itertools
+
+    from sixvertex.domains import DomainError
+
+    cutsets = [[0, 1, 2, 3], [0, 1, 2, 4], [0, 1, 3, 4], [0, 2, 3, 4],
+               [0, 2, 4, 6]]
+    compared = 0
+    for bits in itertools.product([0, 1], repeat=9):
+        I = np.array(bits).reshape(3, 3)
+        if I.sum() == 0:
+            continue
+        for X in cutsets:
+            for Y in cutsets:
+                try:
+                    m = domain_mask(X, Y, I)
+                except DomainError:
+                    continue
+                compared += 1
+                assert admits_configuration(m) == (enumerate_edge_configs(m) > 0), (
+                    f"the criterion and exhaustive enumeration disagree on "
+                    f"X={X}, Y={Y}, I={I.tolist()}")
+    assert compared == 1078, (
+        f"the sweep now covers {compared} domains, not the 1078 both "
+        f"docstrings record")
 
 
 def test_nonemptiness_depends_on_the_cuts_not_only_on_I():
@@ -2772,8 +2810,11 @@ def test_only_degree_four_free_corners_are_sampled():
     CFTP is exact only because the coupling is monotone, and the condition
     c1c2 >= a1a2, c1c2 >= b1b2 was derived for a corner surrounded by four
     faces -- the only kind a square has. General domains do produce free
-    corners of degree 1, 2 and 3 (122 of 1635 across a 213-domain scan), and
-    at those the derivation does not apply. Every domain the sampler accepts
+    corners of degree 1, 2 and 3 -- 122 of the 1277 free corners across the 135
+    samplable domains this scan reaches, spread over 11 domains -- and at those
+    the derivation does not apply. (This said "122 of 1635 across a 213-domain
+    scan"; the 122 reproduces and the other two do not, so
+    test_the_domain_scan_census_is_computed_not_quoted counts them instead.) Every domain the sampler accepts
     turned out to have only degree-4 free corners anyway, but that is a
     finite observation, so it is checked rather than relied on.
     """
@@ -3077,7 +3118,13 @@ def test_compiled_domain_sweep_is_bit_identical_to_the_reference():
                                    sweep_plan, sweep_plan_arrays)
 
     if not sd._HAS_NUMBA:
-        return
+        # pytest.skip, not a bare `return`: a return reports PASS, so on a
+        # machine without numba this whole comparison vanished silently. Same
+        # defect as the Izergin-Korepin check, which returned quietly when
+        # mpmath was absent and was therefore vacuous wherever it mattered.
+        import pytest
+        pytest.skip("numba is not installed, so there is no compiled sweep "
+                    "to compare against the reference one")
     w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=2.0, c2=2.0)
     for cuts, I in (([0, 2, 4, 6], [[1, 1, 1], [0, 1, 1], [0, 0, 1]]),
                     ([0, 4, 8, 12], [[0, 1, 0], [1, 1, 1], [0, 1, 0]]),
@@ -6640,3 +6687,152 @@ def test_every_label_table_in_the_package_is_discovered_and_agrees():
     assert checked >= 5 * len(bits), (
         f"only {checked} (table, bits) pairs were actually probed; the "
         f"adapters are skipping tables rather than checking them")
+
+
+def test_the_domain_scan_census_is_computed_not_quoted():
+    """The degree-4 precondition's evidence is a finite scan, so count it.
+
+    Two docstrings quoted "213 samplable domains" and "1635 free corners".
+    Neither reproduces from the scan they describe -- it is 135 and 1277 --
+    while the 122 low-degree corners and the 11 domains carrying them do. The
+    larger figures came from a wider scan and were never updated.
+
+    Also pinned: the stated MECHANISM (those 11 have a disconnected corner
+    graph) against the refusal path actually taken (the extremal-height
+    validity check, not connectivity). The module claimed they "were already
+    refused for having a disconnected corner graph", which named the wrong
+    check even though the property holds.
+    """
+    import itertools
+
+    import numpy as np
+    import pytest
+
+    from sixvertex.domains import (DomainError, _components, _faces_of_corner,
+                                   admits_configuration, cftp_sample,
+                                   check_monotone_precondition, domain_mask,
+                                   free_corners)
+
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.6, c2=1.6)
+    domains = corners = low = 0
+    low_domains = []
+    for bits in itertools.product([0, 1], repeat=9):
+        I = np.array(bits).reshape(3, 3)
+        if I.sum() == 0:
+            continue
+        for cuts in ([0, 1, 2, 4], [0, 2, 4, 6]):
+            try:
+                m = domain_mask(cuts, cuts, I)
+            except DomainError:
+                continue
+            if not admits_configuration(m):
+                continue
+            degs = [len(_faces_of_corner(m, int(i), int(j)))
+                    for (i, j) in map(tuple, np.argwhere(free_corners(m)))]
+            domains += 1
+            corners += len(degs)
+            nl = sum(1 for d in degs if d != 4)
+            low += nl
+            if nl:
+                low_domains.append(m)
+
+    assert (domains, corners, low) == (135, 1277, 122), (
+        f"the scan census moved to {(domains, corners, low)}; the docstrings "
+        f"record 135 domains, 1277 free corners, 122 of them low-degree")
+    assert len(low_domains) == 11, len(low_domains)
+
+    for m in low_domains:
+        # the stated property holds
+        assert len(_components(m)) > 1, (
+            "a low-degree-corner domain now has a connected corner graph, so "
+            "the mechanism in check_monotone_precondition no longer explains "
+            "why these are unreachable")
+        # the precondition catches it when asked directly
+        with pytest.raises(DomainError, match="degree-4|not 4"):
+            check_monotone_precondition(m)
+        # but the refusal the sampler actually gives is the earlier one
+        with pytest.raises(DomainError) as e:
+            cftp_sample(m, w, master_seed=0)
+        assert "not a valid configuration" in str(e.value), (
+            f"the refusal path changed to {str(e.value)[:80]!r}; the docstring "
+            f"records that these are stopped by extremal-height validity, not "
+            f"by the connectivity check")
+
+
+def test_the_live_mcmc_samples_the_right_measure_at_general_weights():
+    """SixVertexSampler had NO distributional test anywhere in the suite.
+
+    It is the chain the server runs for the live view at whatever weights the
+    user sets, and it was only ever exercised at the uniform point (and for
+    extremal_height). Given what sixvertex/cftp.py turned out to be -- a module
+    that coalesced happily while returning the uniform measure for every
+    c1 = c2 -- an untested general-weights sampler was the worst remaining gap.
+
+    Measured, 1500 chains x 120 sweeps at n=4, against the exact distribution:
+
+        uniform      TV 0.0551
+        c-dominant   TV 0.0523
+        general      TV 0.0629   (a1=1.3 a2=0.8 b1=1.7 b2=0.6 c1=2.1 c2=1.4)
+
+    against a floor of 0.0662 (uniform) and 0.0623 (general) from drawing 1500
+    samples from the exact law itself. So it is indistinguishable from exact at
+    all three. This is the cheap version of that: 800 chains x 30 sweeps.
+
+    WHAT IT CAN AND CANNOT DETECT, since claiming more would be the error this
+    whole exercise keeps finding. At N=800 the TV floor is 0.085 (99th
+    percentile 0.110), and:
+
+        TV(exact[W], exact[uniform])   0.2922   <- caught comfortably
+        TV(exact[W], exact[c1=2.6])    0.0517   <- BELOW the floor, invisible
+        TV(exact[W], exact[b1<->b2])   0.0000   <- invisible by construction
+
+    So it catches "returns the wrong measure entirely", which is the failure
+    that actually occurred, and does not resolve a fine misspecification. The
+    chi-square below is the sharper of the two statistics (it rejects the
+    c1=2.6 misspecification at p = 0.0014 where TV cannot see it), so both are
+    applied, with thresholds loose enough that neither fails by chance.
+
+    The b1<->b2 row is worth keeping: it is 0.0000 exactly, at general
+    weights, which independently confirms the label-swap invariance that the
+    vertex-naming tests rest on.
+    """
+    import numpy as np
+    from scipy.stats import chisquare
+
+    from sixvertex.sampler import SixVertexSampler
+
+    n, N, sweeps = 4, 800, 30
+    cfgs = enumerate_height_functions(n)
+    keys = {c.astype(np.int64).tobytes(): i for i, c in enumerate(cfgs)}
+    W = dict(a1=1.3, a2=0.8, b1=1.7, b2=0.6, c1=2.1, c2=1.4)
+    _cfg, exact_p, _z = exact_distribution(n, W)
+
+    counts = np.zeros(len(cfgs))
+    for s in range(N):
+        smp = SixVertexSampler(n=n, a1=W["a1"], a2=W["a2"], b1=W["b1"],
+                               b2=W["b2"], c_up=W["c1"], c_down=W["c2"],
+                               seed=7000 + s)
+        smp.step(sweeps)
+        H = np.asarray(smp.height_array(), dtype=np.int64)
+        k = keys.get(H.tobytes())
+        assert k is not None, "the MCMC left the state space"
+        counts[k] += 1
+
+    tv = 0.5 * float(np.abs(counts / counts.sum() - exact_p).sum())
+    assert tv < 0.15, (
+        f"TV(MCMC, exact) = {tv:.4f} at general weights; the floor from exact "
+        f"draws at N={N} is 0.085 with a 99th percentile of 0.110, and a "
+        f"sampler returning the wrong measure sits at 0.29 or more")
+
+    expected = exact_p * counts.sum()
+    chi, p = chisquare(counts, expected * counts.sum() / expected.sum())
+    assert p > 1e-4, (
+        f"chi-square against the exact law gives p = {p:.2g}; the MCMC is not "
+        f"sampling the measure its weights define")
+
+    # the label swap is exactly invisible, at general weights
+    _c2, swapped, _z2 = exact_distribution(
+        n, dict(W, b1=W["b2"], b2=W["b1"]))
+    assert float(np.abs(exact_p - swapped).max()) < 1e-15, (
+        "exchanging b1 and b2 changed the exact measure, which would break "
+        "the argument the vertex-naming tests rest on")
