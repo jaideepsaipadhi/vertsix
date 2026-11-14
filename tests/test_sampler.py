@@ -9279,3 +9279,107 @@ def test_the_variance_growth_check_is_not_the_vacuous_one_it_used_to_be():
     assert "linear" in words and "log" in words, (
         f"the title should say what it does exclude (linear) and what it "
         f"cannot (log n); got {words!r}")
+
+
+def test_the_stopping_figure_quotes_the_exponents_its_own_csv_gives():
+    """plot_stopping.py's conclusion is a number: the T* ~ n^alpha exponent
+    rises from a plateau into the antiferroelectric phase. Nothing checked
+    that number against the CSV shipped beside it, and the number moved.
+
+    The committed CSV used to be measured with a base that omitted Delta, so
+    every Delta at fixed n shared one random stream. Regenerated on disjoint
+    blocks, the figure's own quantities change:
+
+        Delta = -4         2.86 [2.63, 2.98]  ->  2.76 [2.57, 3.00]
+        plateau top edge   2.47               ->  2.53
+        non-overlap gap    0.16               ->  0.04
+        T*/forward range   [0.88, 1.13]       ->  [0.84, 1.25]
+
+    The ordering claim survives; the clean-separation claim did not, and the
+    docstring says so now rather than quoting the comfortable version. This
+    test recomputes all of it from the CSV with plot_stopping's own fitting
+    code, so the docstring cannot drift from the data again -- in either
+    direction.
+
+    The exponents are recomputed, not re-measured: refitting the shipped CSV
+    is a fraction of a second, where regenerating it took 5.6 minutes.
+    """
+    import csv
+    import importlib.util
+    import pathlib
+    from collections import defaultdict
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    mod_path = root / "experiments" / "plot_stopping.py"
+    spec = importlib.util.spec_from_file_location("_ps", mod_path)
+    ps = importlib.util.module_from_spec(spec)
+    import matplotlib
+    matplotlib.use("Agg")
+    spec.loader.exec_module(ps)
+
+    rows = list(csv.DictReader(
+        open(root / "experiments" / "cftp_stopping_sample.csv")))
+    assert rows, "the stopping-time CSV is empty"
+
+    by_delta = defaultdict(dict)
+    for r in rows:
+        by_delta[float(r["delta"])][int(r["n"])] = float(r["median_Tstar"])
+
+    alphas = {}
+    for d, by_n in by_delta.items():
+        ns = np.array(sorted(by_n), dtype=float)
+        ts = np.array([by_n[int(n)] for n in ns], dtype=float)
+        alphas[d] = float(np.polyfit(np.log(ns), np.log(ts), 1)[0])
+
+    import re
+    doc = mod_path.read_text()
+
+    # the headline exponent at Delta = -4
+    m = re.search(r"reaching ([\d.]+) \[([\d.]+), ([\d.]+)\] at Delta = -4", doc)
+    assert m, "the Delta=-4 exponent is no longer quoted"
+    quoted = float(m.group(1))
+    assert abs(alphas[-4.0] - quoted) < 0.02, (
+        f"docstring quotes alpha = {quoted} at Delta=-4; the committed CSV "
+        f"gives {alphas[-4.0]:.3f}")
+
+    # The plateau threshold is read out of plot_stopping rather than repeated
+    # here, because repeating it is how the figure and its own docstring came
+    # to disagree: the note said Delta >= -2 while panel (b) drew -1.5.
+    thr = re.search(r"PLATEAU_MAX_DELTA = (-?[\d.]+)", doc)
+    assert thr, "plot_stopping no longer names its plateau threshold"
+    cut = float(thr.group(1))
+    assert f"Delta >= {cut:g}" in doc, (
+        f"panel (b) uses a plateau threshold of {cut:g} but the docstring "
+        f"does not say 'Delta >= {cut:g}'")
+
+    # the plateau really is a plateau, and Delta=-4 really is above it
+    plateau = [a for d, a in alphas.items() if d >= cut]
+    assert max(plateau) - min(plateau) < 0.25, (
+        f"the 'plateau' for Delta >= {cut:g} spans {min(plateau):.2f}..{max(plateau):.2f}, "
+        f"which is not flat enough to call a plateau")
+    assert alphas[-4.0] > max(plateau), (
+        f"Delta=-4 ({alphas[-4.0]:.2f}) is not above the plateau "
+        f"(max {max(plateau):.2f}); the figure's conclusion has inverted")
+
+    # the deepest three are ordered above the rest, which is the claim the
+    # docstring now makes in place of clean separation
+    deep = [alphas[d] for d in (-2.5, -3.0, -4.0)]
+    assert min(deep) > max(plateau) - 0.05, (deep, max(plateau))
+
+    # the T*/forward ratio range
+    ratios = [float(r["median_Tstar"]) / float(r["median_forward"])
+              for r in rows]
+    rm = re.search(r"ratios in\s*\n?\s*\[([\d.]+), ([\d.]+)\] with no trend", doc)
+    assert rm, "the T*/forward ratio range is no longer quoted"
+    lo_q, hi_q = float(rm.group(1)), float(rm.group(2))
+    assert abs(min(ratios) - lo_q) < 0.01 and abs(max(ratios) - hi_q) < 0.01, (
+        f"docstring quotes ratios in [{lo_q}, {hi_q}]; the CSV gives "
+        f"[{min(ratios):.3f}, {max(ratios):.3f}]")
+
+    # and the stated percentage must match that range
+    pm = re.search(r"agree to within (\d+)% at every", doc)
+    assert pm, "the agreement percentage is gone"
+    worst = max(abs(1 - min(ratios)), abs(max(ratios) - 1))
+    assert abs(worst * 100 - int(pm.group(1))) < 1.5, (
+        f"docstring says within {pm.group(1)}%; the CSV's worst deviation is "
+        f"{worst * 100:.1f}%")

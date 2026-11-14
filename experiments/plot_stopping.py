@@ -22,11 +22,26 @@ to that interval and is not claimed more precisely.
 
 Panel (b) is what makes (a) a statement about the model rather than about one
 lattice size. Fitting T* ~ n^alpha across n = 12..32 at each Delta, the
-exponent sits on a plateau at about 2.3 for Delta >= -1.5 -- flat to within
-its intervals across the whole ferroelectric and disordered range, including
+exponent sits on a plateau at about 2.3 for Delta >= -2 -- flat to within its
+intervals across the whole ferroelectric and disordered range, including
 across the minimum in (a) -- and then RISES into the antiferroelectric phase,
-reaching 2.86 [2.63, 2.98] at Delta = -4, which does not overlap the plateau.
-A curve in (a) alone only says which Delta is slower at one n; a rising
+reaching 2.76 [2.57, 3.00] at Delta = -4.
+
+How far that separation can be pushed is worth stating exactly, because an
+earlier version of this note overstated it. These numbers come from the
+CURRENT cftp_stopping_sample.csv, measured with disjoint seed blocks per
+(n, Delta). The previous CSV was measured with a base that omitted Delta, so
+every Delta at fixed n shared one random stream -- the defect recorded in
+experiments/seeds.py -- and on that data Delta = -4 read 2.86 [2.63, 2.98]
+against a plateau topping out at 2.47, a gap of 0.16 that looked clean. On
+disjoint seeds the plateau's upper edge rises to 2.53 (at Delta = +0.5 and
+-1.5) while Delta = -4 falls to 2.57 at the bottom of its interval. The
+intervals still do not overlap, but by 0.04, not 0.16.
+
+So the honest claim is the ordering, not the separation: Delta = -4 is above
+the plateau, the three deepest Delta values (-2.5, -3, -4) are ordered above
+the rest, and the margin on any single pair is comparable to the interval
+width. A curve in (a) alone only says which Delta is slower at one n; a rising
 exponent says the slowdown compounds with size, which is what the
 antiferroelectric slowdown has to mean to survive the limit.
 
@@ -36,11 +51,14 @@ constant factor, not a different power. Only the antiferroelectric side
 changes the exponent.
 
 Panel (c) is the audit of the earlier substitution. T* and the forward
-coalescence time agree to within 13% at every (n, Delta) measured, ratios in
-[0.88, 1.13] with no trend in Delta. So the earlier figure was not measuring
-the wrong shape -- but that is now a measurement, not an argument from the
-doubling schedule, which was the wrong argument: the schedule quantises the
-REPORTED number, not the quantity.
+coalescence time agree to within 25% at every (n, Delta) measured, ratios in
+[0.84, 1.25] with no trend in Delta. (On the old shared-seed CSV this read
+"within 13%", ratios in [0.88, 1.13]; the wider range on disjoint seeds is
+the more honest figure, and it is still a constant-factor agreement with no
+Delta dependence, which is all panel (c) needs to say.) So the earlier figure
+was not measuring the wrong shape -- but that is now a measurement, not an
+argument from the doubling schedule, which was the wrong argument: the
+schedule quantises the REPORTED number, not the quantity.
 
 A caution on (b). The fit spans n = 12..32, under a factor of three, and the
 exponents carry bootstrap intervals of roughly +-0.1. The ORDERING across
@@ -145,9 +163,17 @@ def main(src, raw_src, dst):
     axB.fill_between(dd, lo_a, hi_a, color=ACCENT, alpha=0.18, linewidth=0, zorder=2)
     axB.plot(dd, al, "-o", color=ACCENT, linewidth=2, markersize=5,
              markeredgecolor=SURFACE, markeredgewidth=1.4, zorder=3)
-    plateau = float(np.mean(al[dd >= -1.5]))
+    # The threshold is -2, not -1.5, and the two must agree with the
+    # docstring -- they did not: the note said -2 while this drew -1.5. On
+    # the current CSV the exponent is flat from +0.5 back to -2 (2.43, 2.29,
+    # 2.33, 2.29, 2.36, 2.31) and breaks at -2.5 (2.49), so -2 is where the
+    # plateau actually ends. PLATEAU_MAX_DELTA is read by the test that pins
+    # this figure, so the two cannot drift apart again.
+    PLATEAU_MAX_DELTA = -2.0
+    plateau = float(np.mean(al[dd >= PLATEAU_MAX_DELTA]))
     axB.axhline(plateau, color=MUTED, linewidth=1.2, linestyle=(0, (4, 3)), zorder=1)
-    axB.annotate(rf"plateau, $\Delta \geq -1.5$:  $\alpha = {plateau:.2f}$",
+    axB.annotate(rf"plateau, $\Delta \geq {PLATEAU_MAX_DELTA:g}$:  "
+                 rf"$\alpha = {plateau:.2f}$",
                  (0.97, 0.96), xycoords="axes fraction", ha="right",
                  va="top", color=MUTED, fontsize=9)
     axB.set_xlabel(r"$\Delta$", color=INK2, fontsize=10.5)
