@@ -14,6 +14,30 @@ These exist because this project has had two subtle correctness bugs that
 Both survived because the two samplers were checked *against each other*
 while sharing the same flawed assumption. So every correctness test here
 compares against brute-force enumeration, which is independent of both.
+
+Two working rules this suite has earned the hard way.
+
+MUTATION-CHECK EVERY NEW ASSERTION. A test that cannot fail is worse than no
+test, because it reads as evidence. Several checks here were vacuous for
+months: the Izergin-Korepin comparison ran only at a=b and returned silently
+without mpmath, the compiled-vs-numpy coalescence check compared the compiled
+path against itself because the numba flag had been bound at import time, and
+the brute-force oracle never validated a face whose four corners were all on
+the boundary. Each looked like a passing test.
+
+When mutation-checking, CLEAR __pycache__ between the mutation and the
+restore. Python invalidates bytecode by mtime and size, so an edit that
+restores a file within the same second can leave a stale .pyc -- which makes
+a mutation look like it was not detected. That is indistinguishable from the
+finding you are trying to establish. Observed here, and the one conclusion
+drawn from a surviving mutation was re-run with a cleared cache before being
+believed.
+
+PREFER A SWEEP TO HAND-PICKED CASES where the sweep is affordable, and it
+usually is. Five tables of six, eight domains of 1078, five enumerator cases
+all chosen from the non-empty half, three domains of 191 for the monotonicity
+the whole method rests on -- each of those hid a real defect that the
+corresponding sweep found in seconds.
 """
 import math
 import os
@@ -2967,24 +2991,71 @@ def test_the_two_samplers_agree_on_the_square():
 
 
 def test_the_coupling_is_monotone_on_a_general_domain():
-    """Exhaustive, not sampled -- see experiments/monotone_check.
+    """Exhaustive, and over the family rather than three chosen members.
 
-    The full run covers 5 domains x 5 Delta values with zero violations,
-    including a notch domain carrying 2889 configurations at each Delta. This
-    keeps the cheap end of it in the suite.
+    Monotonicity is the single property CFTP's exactness rests on, and this
+    used to check 3 hand-picked domains at 2 values of Delta -- 6 checks. The
+    exhaustive check is quadratic in the configuration count, which is why it
+    was kept small, but it is cheap on every domain that has few enough
+    configurations to enumerate: 191 of them carry 200 or fewer, and sweeping
+    all of those at three Delta values is 573 exhaustive checks in about 17
+    seconds. Hand-picked cases standing in for a sweep that was affordable all
+    along is how three separate defects hid in this suite today, so the sweep
+    is the test.
+
+    Exhaustive means exhaustive: every ordered pair of configurations, every
+    site, and the driving uniform evaluated at every threshold of the update
+    and on both sides of it. Zero violations.
+
+    The Delta values span the region rather than sampling its interior: 0.5 is
+    the BOUNDARY, where a1a2 = b1b2 = c1c2 exactly and the condition holds
+    with equality, which is the case most likely to fail; -5.0 is deep inside.
+    experiments/monotone_check covers larger domains, including a notch with
+    2889 configurations, which is past what belongs in a test run.
     """
-    from sixvertex.domains import domain_mask
+    import itertools
+
+    import numpy as np
+
+    from sixvertex.domains import (DomainError, admits_configuration,
+                                   domain_mask)
+    from experiments.brute_domain import enumerate_heights
     from experiments.mixing import weights_for_delta
     from experiments.monotone_check import monotonicity_violations
 
-    cases = [([0, 4], [0, 4], [[1]]),
-             ([0, 2, 4, 6], [0, 2, 4, 6], [[1, 1, 1], [0, 1, 1], [0, 0, 1]]),
-             ([0, 2, 4, 6], [0, 2, 4, 6], [[0, 1, 0], [1, 1, 1], [0, 1, 0]])]
-    for d in (0.5, -3.0):
+    masks = []
+    for bits in itertools.product([0, 1], repeat=9):
+        I = np.array(bits).reshape(3, 3)
+        if I.sum() == 0:
+            continue
+        for cuts in ([0, 1, 2, 3], [0, 1, 2, 4], [0, 2, 4, 6]):
+            try:
+                m = domain_mask(cuts, cuts, I)
+            except DomainError:
+                continue
+            if not admits_configuration(m):
+                continue
+            try:
+                k = len(enumerate_heights(m))
+            except (RuntimeError, DomainError):
+                continue
+            if 0 < k <= 200:
+                masks.append((cuts, I.tolist(), m))
+
+    assert len(masks) == 191, (
+        f"the sweep now covers {len(masks)} domains, not the 191 recorded; "
+        f"the enumerable-domain census moved")
+
+    checks = 0
+    for d in (0.5, -1.0, -5.0):
         w = weights_for_delta(d)
-        for X, Y, I in cases:
-            v = monotonicity_violations(domain_mask(X, Y, I), w)
-            assert not v, (d, I, v)
+        for cuts, I, m in masks:
+            v = monotonicity_violations(m, w)
+            checks += 1
+            assert not v, (
+                f"the coupling is NOT monotone at Delta={d} on cuts={cuts}, "
+                f"I={I}: {v[0]}. CFTP's exactness rests on this.")
+    assert checks == 573, checks
 
 
 def test_the_monotone_region_is_sharp():
@@ -5029,6 +5100,14 @@ def test_label_swaps_leave_the_measure_invariant_on_general_domains_too():
     (Gorin-Kenyon Theorem 2.11), and the cross-table test is what guards it.
     This records the reason, so nobody re-opens the question by sampling a
     stranger domain.
+
+    "A stranger domain" used to be two of them, chosen by hand. That is thin
+    support for the argument the entire vertex-naming edifice rests on -- and
+    the one cited again this session to conclude that sampler.py's swapped
+    b1/b2 changed nothing observable. So the invariant is swept over every
+    enumerable domain in the family instead: 619 domains, zero failures, four
+    seconds. If it had failed anywhere, those swaps WOULD have been detectable
+    on those domains and the conclusion would have been wrong.
     """
     import numpy as np
 
@@ -5070,6 +5149,54 @@ def test_label_swaps_leave_the_measure_invariant_on_general_domains_too():
             # Z is allowed to move, and that is the whole asymmetry: the
             # normalisation absorbs the constant factor.
             assert Z1 > 0
+
+    # ---- the same two properties over the whole enumerable family ----
+    import itertools
+
+    from sixvertex.domains import DomainError, admits_configuration
+
+    cutsets = [[0, 1, 2, 3], [0, 1, 2, 4], [0, 1, 3, 4], [0, 2, 3, 4],
+               [0, 2, 4, 6]]
+    swept = 0
+    for bits in itertools.product([0, 1], repeat=9):
+        I = np.array(bits).reshape(3, 3)
+        if I.sum() == 0:
+            continue
+        for X in cutsets:
+            for Y in cutsets:
+                try:
+                    m = domain_mask(X, Y, I)
+                except DomainError:
+                    continue
+                if not admits_configuration(m):
+                    continue
+                try:
+                    hs = enumerate_heights(m)
+                except (RuntimeError, DomainError):
+                    continue
+                if not hs or len(hs) > 400:
+                    continue
+                cs = [classify_counts(H, m) for H in hs]
+                swept += 1
+                for lo, hi in (("a1", "a2"), ("b1", "b2"), ("c1", "c2")):
+                    diffs = {c.get(lo, 0) - c.get(hi, 0) for c in cs}
+                    assert len(diffs) == 1, (
+                        f"#{lo} - #{hi} is not constant on X={X}, Y={Y}, "
+                        f"I={I.tolist()}: {sorted(diffs)}. The label swap is "
+                        f"DETECTABLE there, so the naming argument fails on "
+                        f"that domain.")
+                    v = np.array([np.prod([w[k] ** n for k, n in c.items()])
+                                  for c in cs], dtype=float)
+                    sw = dict(w)
+                    sw[lo], sw[hi] = w[hi], w[lo]
+                    v2 = np.array([np.prod([sw[k] ** n for k, n in c.items()])
+                                   for c in cs], dtype=float)
+                    assert np.abs(v / v.sum() - v2 / v2.sum()).max() < 1e-12, (
+                        f"swapping {lo}/{hi} moved the measure on X={X}, "
+                        f"Y={Y}, I={I.tolist()}")
+    assert swept == 619, (
+        f"the sweep now covers {swept} enumerable domains, not the 619 "
+        f"recorded")
 
 
 def test_the_exact_sampling_job_lifecycle():

@@ -14,6 +14,15 @@ the outcome of one update is a STEP function of the driving uniform u, with at
 most two thresholds, so evaluating u at those thresholds and on either side of
 them covers every behaviour the update can have.
 
+The "either side" part is belt rather than braces, and measured to be so:
+replacing the three probes (c-1e-9, c, c+1e-9) with c alone leaves every
+monotonicity test in the suite green, the off-region sharpness case included.
+The reason is that the threshold set already contains 0.0 and 1.0, which force
+both branches, and at u = min(pa, pb) exactly one chain moves up while the
+other moves down -- which is the mixed case the +1e-9 probe was there to
+reach. The probes are kept because they cost nothing and the argument above is
+about an interval rather than a point, but no test depends on them.
+
 Results (all 5 domains x 5 Delta values, zero violations), with the notch
 domain carrying 2889 configurations at each Delta:
 
