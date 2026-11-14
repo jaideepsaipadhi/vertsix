@@ -8791,3 +8791,81 @@ def test_no_test_in_this_file_can_skip_itself_silently():
     assert not offenders, (
         "these tests can end early and still report PASS; use pytest.skip so "
         "the skip is visible: " + ", ".join(offenders))
+
+
+def test_every_slice_sentinel_in_this_file_still_exists_in_the_source():
+    """This file inspects shipped JS, HTML and CSS at eighty slice sites --
+    76 of them with a literal landmark, 57 distinct ones -- src.index("function makeShadow") and
+    the like. That is how a source-text check narrows to the region it means,
+    and it has one failure mode: rename the landmark and str.index raises
+    ValueError.
+
+    It happened. cFraction was renamed bFraction and
+    test_live_equilibration_diagnostic_exists, which sliced from
+    "function makeShadow" to "function cFraction", stopped checking anything.
+    Worse than stopping: it raised BEFORE its assertion, so the report read
+    as an error in the equilibration diagnostic rather than as a stale
+    landmark, and the real check -- that the shadow chain starts from the
+    OPPOSITE extremal configuration -- went unmade in the meantime.
+
+    This test converts that whole class into one named failure. Every string
+    literal passed to .index or .rindex anywhere in this file must still
+    occur in some non-test source file. A rename now fails here, saying which
+    landmark went missing, instead of surfacing as a ValueError inside
+    whichever unrelated-looking test happened to depend on it.
+
+    Measured when written: 80 .index/.rindex sites, 76 with a literal
+    needle, 57 distinct needles, 12 of them used at more than one site, and
+    every one of the 57 present in a source file. The distinct-literal count
+    is the one to assert on; counting call sites instead double-counts the
+    twelve, which is what the first draft of this test's own self-check got
+    wrong -- it demanded >= 60 and found 57.
+
+    What this does NOT catch, and the limit is worth naming: a sentinel that
+    occurs MORE than once, where the slice silently takes the first
+    occurrence and may take the wrong one. Several are deliberately like
+    that -- the stacked-button test uses rindex on class="stack" precisely
+    because it wants the last one before a landmark -- so a
+    must-occur-exactly-once rule would be wrong rather than strict. Those
+    sites are guarded only by the assertions that follow them.
+    """
+    import ast
+    import pathlib
+
+    me = pathlib.Path(__file__).resolve()
+    root = me.parent.parent
+
+    sources = {}
+    for path in sorted(root.rglob("*")):
+        if (not path.is_file() or path.resolve() == me
+                or "__pycache__" in str(path)
+                or path.suffix not in {".js", ".html", ".css", ".py", ".md",
+                                       ".toml", ".txt"}):
+            continue
+        try:
+            sources[str(path.relative_to(root))] = path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+    assert len(sources) >= 10, sorted(sources)
+
+    sentinels = {}
+    for node in ast.walk(ast.parse(me.read_text())):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("index", "rindex")
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            sentinels.setdefault(node.args[0].value, []).append(node.lineno)
+    assert len(sentinels) >= 50, (
+        f"found only {len(sentinels)} slice sentinels; the AST walk is "
+        f"probably broken, since this file is full of them")
+
+    missing = {s: lines for s, lines in sentinels.items()
+               if not any(s in text for text in sources.values())}
+    assert not missing, (
+        "these landmarks are sliced for but no longer appear in any source "
+        "file, so the tests using them raise instead of checking: "
+        + "; ".join(f"{s!r} (line{'s' if len(v) > 1 else ''} "
+                    f"{', '.join(map(str, v))})"
+                    for s, v in sorted(missing.items())))
