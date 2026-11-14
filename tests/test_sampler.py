@@ -8410,3 +8410,109 @@ def test_every_third_party_import_in_the_repository_is_a_declared_dependency():
         "imported but declared in no pyproject dependency or extra: "
         + "; ".join(f"{m} ({len(f)} files, e.g. {f[0]})"
                     for m, f in sorted(undeclared.items())))
+
+
+def test_the_package_parses_at_the_python_floor_its_metadata_promises():
+    """`requires-python = ">=3.9"` is a promise to an installer, and nothing
+    checked it. pip honours it: a 3.9 user is told the wheel fits, installs
+    it, and finds out otherwise at import time, with a SyntaxError pointing
+    at a line rather than at the version.
+
+    The check reads the floor OUT of pyproject.toml and re-parses every
+    shipped .py file at that feature_version, so it tracks the promise instead
+    of hardcoding 3.9: raise the floor and the test follows.
+
+    Scope is what the wheel installs -- the sixvertex package -- plus
+    server.py, which the Procfile runs. tests/ and experiments/ are
+    deliberately excluded. They are not in the wheel, and this file itself
+    uses tomllib and sys.stdlib_module_names (3.11 and 3.10), guarded by a
+    skip, in the dependency census above.
+
+    What this does and does not catch, stated because the gap is tempting to
+    forget: ast.parse with feature_version is a SYNTAX check. It catches a
+    match statement, a `case` block, parenthesised context managers, an
+    `X | Y` annotation evaluated at runtime, and the walrus and positional-only
+    forms. It does NOT catch a stdlib function that did not exist yet --
+    zip(strict=...), itertools.pairwise, int.bit_count, importlib.resources.files.
+    Those are checked here by name, as a named list rather than a general
+    argument, which is honest about being incomplete.
+
+    Entries in that list at or below the current floor are inert by design --
+    removeprefix is 3.9 and the floor is 3.9, so it is not flagged -- and are
+    kept so that raising the floor activates them rather than requiring the
+    list to be rewritten.
+
+    Verified clean at the time of writing: no syntax outside 3.9 anywhere in
+    the repository, tests included, and none of the listed runtime names in
+    sixvertex/ or server.py.
+    """
+    import ast
+    import pathlib
+    import re
+    import sys
+
+    import pytest
+
+    if sys.version_info < (3, 11):
+        pytest.skip("needs tomllib")
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    spec = tomllib.loads(
+        (root / "pyproject.toml").read_text())["project"]["requires-python"]
+    m = re.search(r">=\s*(\d+)\.(\d+)", spec)
+    assert m, f"could not read a floor out of requires-python = {spec!r}"
+    floor = (int(m.group(1)), int(m.group(2)))
+    assert floor >= (3, 7), floor      # ast's own lower bound
+
+    shipped = sorted((root / "sixvertex").rglob("*.py")) + [root / "server.py"]
+    assert len(shipped) >= 7, [p.name for p in shipped]
+
+    for path in shipped:
+        src = path.read_text()
+        try:
+            ast.parse(src, filename=str(path), feature_version=floor)
+        except SyntaxError as e:
+            raise AssertionError(
+                f"{path.relative_to(root)}:{e.lineno} does not parse at "
+                f"Python {floor[0]}.{floor[1]}, which pyproject promises "
+                f"({spec}): {e.msg}") from None
+
+    # stdlib names newer than the floor, which no syntax check can see.
+    # These are REGEXES, not substrings: the first draft looked for the
+    # literal "zip(strict=" and so missed zip(a, b, strict=True), which is
+    # the only form anyone writes -- the mutation that planted it passed.
+    too_new = {
+        r"\bzip\([^)]*\bstrict\s*=": (3, 10),
+        r"\bpairwise\s*\(": (3, 10),
+        r"\.bit_count\s*\(": (3, 10),
+        r"\bstdlib_module_names\b": (3, 10),
+        r"\bimportlib\.resources\.files\b": (3, 9),
+        r"\bmath\.lcm\b": (3, 9),
+        r"\bmath\.nextafter\b": (3, 9),
+        r"\bstr\.(removeprefix|removesuffix)\b|\.remove(prefix|suffix)\s*\(": (3, 9),
+        r"\bgraphlib\b": (3, 9),
+        r"\btomllib\b": (3, 11),
+        r"\bExceptionGroup\b": (3, 11),
+        r"\bcontextlib\.chdir\b": (3, 11),
+        r"\bdatetime\.UTC\b|\bdt\.UTC\b": (3, 11),
+        r"\bStrEnum\b": (3, 11),
+        r"\bTaskGroup\b": (3, 11),
+        r"\btyping\.Self\b|\bSelf\b\s*[\]:,)]": (3, 11),
+        r"\bitertools\.batched\b|\bbatched\s*\(": (3, 12),
+        r"\bsys\.monitoring\b": (3, 12),
+    }
+    # the patterns themselves must be able to fire, or the loop is decoration
+    assert re.search(list(too_new)[0], "list(zip(a, b, strict=True))"), (
+        "the zip(strict=) pattern does not match the form people write")
+
+    hits = []
+    for path in shipped:
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for pat, since in too_new.items():
+                if since > floor and re.search(pat, line):
+                    hits.append(f"{path.relative_to(root)}:{lineno} {pat}")
+    assert not hits, (
+        f"newer than the promised Python {floor[0]}.{floor[1]} floor: " + "; ".join(hits))
