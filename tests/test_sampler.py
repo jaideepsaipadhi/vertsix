@@ -8869,3 +8869,63 @@ def test_every_slice_sentinel_in_this_file_still_exists_in_the_source():
         + "; ".join(f"{s!r} (line{'s' if len(v) > 1 else ''} "
                     f"{', '.join(map(str, v))})"
                     for s, v in sorted(missing.items())))
+
+
+def test_the_island_refuses_a_connectivity_it_does_not_implement():
+    """island() took connectivity=8 or anything-else, and anything-else fell
+    through to structure=None, which scipy.ndimage.label reads as
+    4-connectivity. So connectivity="eight", or 6, or a None arriving from a
+    caller's own default, silently measured the definition the project
+    REJECTED while the caller believed it had asked for the accepted one.
+
+    The two are not close, and the gap is the whole argument for the choice.
+    On one sample at n=24, Delta=-3:
+
+        connectivity=8    size 192   separation 17.5x
+        connectivity=4    size  96   separation  3.4x
+        connectivity=6    size  96   separation  3.4x   <- silently 4
+        connectivity="eight"          separation  3.4x   <- silently 4
+
+    island.py's own docstring argues for 8-connectivity precisely because it
+    separates the island from the runner-up by a large factor where
+    4-connectivity gives 3.4x. A figure produced through a typo would have
+    quoted the number that justifies the definition it was not using, and
+    nothing would have said so -- the measurement would simply have come out
+    low, and a low number on this quantity reads as a physical result rather
+    than as a wrong argument.
+
+    4 and 8 are both accepted, because the comparison between them is a
+    measurement the project makes on purpose. Everything else raises.
+    """
+    import pytest
+
+    from experiments.island import island
+    from experiments.mixing import weights_for_delta
+    from sixvertex.cftp_exact import cftp_sample
+
+    n = 24
+    H, _ = cftp_sample(n, weights_for_delta(-3.0), master_seed=880001)
+
+    eight = island(H, n, connectivity=8)
+    four = island(H, n, connectivity=4)
+    assert eight["size"] > four["size"], (eight["size"], four["size"])
+    assert eight["separation"] > 3 * four["separation"], (
+        f"8-connectivity separates by {eight['separation']:.1f}x against "
+        f"{four['separation']:.1f}x for 4; if these are close, the sample "
+        f"chosen here no longer demonstrates the difference the refusal is "
+        f"protecting")
+
+    for bad in (6, 0, 1, 2, 3, 5, 7, 9, None, "eight", "8", -8, 4.5):
+        with pytest.raises(ValueError, match="connectivity must be 4 or 8"):
+            island(H, n, connectivity=bad)
+
+    # 8.0 and 4.0 are NOT in that list and must not be: `8.0 in (4, 8)` is
+    # True in Python and the float behaves as the int, so it is a correct
+    # request spelled differently, not a wrong one. Asserting it raised was
+    # the first draft of this test, and it was the test that was wrong.
+    for good in (8, 4, 8.0, 4.0):
+        assert island(H, n, connectivity=good)["size"] > 0, good
+
+    # the default must be the accepted definition, not the fallback
+    assert island(H, n)["size"] == eight["size"], (
+        "island()'s default connectivity is no longer 8")

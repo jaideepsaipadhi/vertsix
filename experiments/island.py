@@ -127,6 +127,19 @@ def island(H, n, connectivity=8):
     G = corrected_height(H, n)
     isc = c_face_mask(H, n)
 
+    # Anything that is not 8 used to fall through to None, which scipy reads
+    # as 4-connectivity. So connectivity="eight", or 6, or a None left by a
+    # caller's own default, silently measured the REJECTED definition while
+    # the caller believed it had asked for the accepted one -- and the two are
+    # not close: at n=24, Delta=-3 the same sample gives size 192 and
+    # separation 17.5x under 8-connectivity against size 96 and 3.4x under 4.
+    # Separation is the entire reason 8 was chosen, so a figure built that way
+    # would have reported the number that justifies the definition it was not
+    # using.
+    if connectivity not in (4, 8):
+        raise ValueError(
+            f"connectivity must be 4 or 8, got {connectivity!r}; anything "
+            f"else used to be silently treated as 4")
     structure = np.ones((3, 3)) if connectivity == 8 else None
     lab, nlab = ndimage.label(isc, structure=structure)
     if nlab == 0:
