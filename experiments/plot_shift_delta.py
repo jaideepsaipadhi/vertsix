@@ -9,13 +9,20 @@ they happen to occupy the same range in magnitude -- a second y-scale would
 invent a comparison that is not in the data.
 
 Panel (b) is why no limit is claimed. The marginal quantities 1/sigma^2 and
-2mu/sigma^2 are each fit well by a + b ln c (chi2 5.3 and 6.7 on 4 dof), and
-their fitted slopes come out equal and opposite to within 0.2 sigma, which
-would force mu -> -1/2. But that statement is exactly "R_lo is constant", and
-R_lo is 220 chi2 on 5 dof away from constant with a clear minimum near
-Delta=-3. The slopes only look equal because each slope's own error, 0.12, is
-far larger than the structure their DIFFERENCE contains. Two marginal fits can
+2mu/sigma^2 are each fit well by a + b ln c -- the regressor is ln of the
+C-WEIGHT, not ln|Delta|, which is worth saying because refitting against
+|Delta| gives different numbers that look like a contradiction and are not --
+with chi2 5.27 and 6.68 on 4 dof. Their fitted slopes, +3.689 and -3.722,
+each +- 0.120, come out equal and opposite to within 0.19 sigma, which would
+force mu -> -1/2. But that statement is exactly "R_lo is constant", and R_lo
+is 214.6 chi2 on 5 dof away from constant with a clear minimum near Delta=-3.
+The slopes only look equal because each slope's own error, 0.120, is far
+larger than the structure their DIFFERENCE contains. Two marginal fits can
 both pass and still be wrong together.
+
+(This paragraph said "220 chi2" where the committed CSV gives 214.6. Nothing
+turns on it -- the point is that R_lo is nowhere near constant -- but every
+other number here is exact and that one was not, so it is now.)
 
 SIZE DEPENDENCE -- read experiments/plot_shift_size before quoting numbers
 from here. This sweep is at n=16, and repeating it at n=32 shows the SHAPE

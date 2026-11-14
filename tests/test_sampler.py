@@ -9615,3 +9615,96 @@ def test_the_domain_figure_quotes_the_numbers_two_scripts_actually_produce():
     for phrase in ("one fifth of the square", "has the ratio upside down",
                    "may be a DIFFERENT statistic"):
         assert phrase in flat, f"the docstring no longer records {phrase!r}"
+
+
+def test_the_shift_delta_figure_quotes_the_fits_its_own_csv_gives():
+    """The last figure script whose statistics were quoted and computed
+    nowhere. Four claims: two goodness-of-fit chi-squares, the two fitted
+    slopes with their shared error, and how far R_lo sits from constant.
+
+    They are right, and the only reason I can say so is that the first
+    recomputation used the wrong regressor. The note says the fits are
+    "a + b ln c"; I read c as the lattice parameter and fitted against
+    ln|Delta|, which gives chi2 4.78 and 15.17 and a slope error of 0.044
+    against the quoted 0.12 -- a mismatch that looks exactly like the two
+    real errors found in the other figures tonight. c is the C-WEIGHT.
+    Against ln(c) every number matches: chi2 5.27 and 6.68 on 4 dof, slopes
+    +3.689 and -3.722 each +- 0.120, equal and opposite to 0.19 sigma.
+
+    That is the third time in one session that a quoted number failed to
+    reproduce because I recomputed a different statistic, not because it was
+    wrong. The regressor is now named in the docstring so the next reader
+    does not repeat it, and this test uses the same one.
+
+    The one figure that genuinely was loose: R_lo's distance from constant
+    was given as "220 chi2 on 5 dof" where the CSV gives 214.6. Nothing turns
+    on it -- the claim is that R_lo is nowhere near constant -- but it was
+    the only inexact number in an otherwise exact paragraph.
+    """
+    import csv
+    import pathlib
+    import re
+
+    from experiments.mixing import weights_for_delta
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    doc = (root / "experiments" / "plot_shift_delta.py").read_text()
+    rows = sorted(csv.DictReader(
+        (root / "experiments" / "shift_delta_chain_sample.csv").open()),
+        key=lambda r: float(r["delta"]))
+
+    D = np.array([float(r["delta"]) for r in rows])
+    Rlo = np.array([float(r["R_lo"]) for r in rows])
+    slo = np.array([float(r["se_lo"]) for r in rows])
+    Rhi = np.array([float(r["R_hi"]) for r in rows])
+    shi = np.array([float(r["se_hi"]) for r in rows])
+
+    inv, y = -np.log(Rlo * Rhi), np.log(Rhi / Rlo)
+    se = np.hypot(slo / Rlo, shi / Rhi)
+    x = np.log(np.array([weights_for_delta(d)["c1"] for d in D]))
+
+    def wls(v):
+        w = 1.0 / se ** 2
+        X = np.vstack([np.ones_like(x), x]).T
+        cov = np.linalg.inv(X.T @ np.diag(w) @ X)
+        b = cov @ X.T @ np.diag(w) @ v
+        resid = v - X @ b
+        return (float(b[1]), float(np.sqrt(np.diag(cov)[1])),
+                float(np.sum(w * resid ** 2)), len(x) - 2)
+
+    b_inv, se_inv, chi_inv, dof = wls(inv)
+    b_y, se_y, chi_y, _ = wls(y)
+
+    m = re.search(r"chi2 ([\d.]+) and ([\d.]+) on (\d) dof", doc)
+    assert m, "the two goodness-of-fit chi-squares are no longer quoted"
+    assert abs(chi_inv - float(m.group(1))) < 0.02, (chi_inv, m.group(1))
+    assert abs(chi_y - float(m.group(2))) < 0.02, (chi_y, m.group(2))
+    assert dof == int(m.group(3)) == 4, (dof, m.group(3))
+
+    sm = re.search(r"slopes, ([+-][\d.]+) and ([+-][\d.]+),\s*\n?\s*each \+- "
+                   r"([\d.]+)", doc)
+    assert sm, "the two fitted slopes are no longer quoted"
+    assert abs(b_inv - float(sm.group(1))) < 0.002, (b_inv, sm.group(1))
+    assert abs(b_y - float(sm.group(2))) < 0.002, (b_y, sm.group(2))
+    for s_ in (se_inv, se_y):
+        assert abs(s_ - float(sm.group(3))) < 0.002, (s_, sm.group(3))
+
+    diff_sigma = abs(b_inv + b_y) / float(np.hypot(se_inv, se_y))
+    dm = re.search(r"to within ([\d.]+) sigma", doc)
+    assert dm, "the slope-cancellation figure is gone"
+    assert abs(diff_sigma - float(dm.group(1))) < 0.02, (
+        diff_sigma, dm.group(1))
+
+    w = 1.0 / slo ** 2
+    flat = float(np.sum(w * Rlo) / np.sum(w))
+    chi_const = float(np.sum(w * (Rlo - flat) ** 2))
+    cm = re.search(r"is ([\d.]+) chi2 on (\d) dof away from constant", doc)
+    assert cm, "the R_lo-vs-constant chi-square is gone"
+    assert abs(chi_const - float(cm.group(1))) < 0.1, (
+        chi_const, cm.group(1))
+    assert len(Rlo) - 1 == int(cm.group(2)), (len(Rlo) - 1, cm.group(2))
+
+    # the regressor must stay named, since getting it wrong is the trap
+    assert "C-WEIGHT" in doc, (
+        "the docstring no longer says which c the fits use; refitting against "
+        "ln|Delta| gives numbers that look like a contradiction")
