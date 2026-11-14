@@ -1133,7 +1133,30 @@
     return S;
   }
 
-  function cFraction(S) {
+  // The density of THROUGH-vertices (b1 horizontal, b2 vertical), which is
+  // (l,t,b,r) = (1,0,0,1) and (0,1,1,0). This was called cFraction and the
+  // badge below called it "c-vertex density", which was wrong twice over --
+  // those bit patterns are the b vertices in classifyBits above, not the c
+  // ones.
+  //
+  // DO NOT "fix" it to count c-vertices. That is the obvious reading of the
+  // old name and it would destroy the diagnostic. The two extremal starting
+  // configurations have EXACTLY EQUAL c-density and maximally different
+  // b-density:
+  //
+  //       n      c-density lo / hi      b-density lo / hi
+  //      12       0.0833 / 0.0833        0.9167 / 0.0000
+  //      24       0.0417 / 0.0417        0.9583 / 0.0000
+  //      48       0.0208 / 0.0208        0.9792 / 0.0000
+  //
+  // so the c-density cannot tell the two chains apart at all. Measured at
+  // n=24, uniform weights, two chains from opposite extremes: the gap in
+  // b-density runs 0.91, 0.79, 0.67, 0.49, 0.36, 0.125 at 1, 5, 20, 50, 100,
+  // 200 sweeps and only falls under the threshold near 400, while the gap in
+  // c-density is 0.017 after ONE sweep -- already inside its own equilibrium
+  // fluctuation. A badge built on the c-density would report "equilibrated"
+  // from the worst possible starting state.
+  function bFraction(S) {
     const n = S.n, size = n + 1;
     let cc = 0;
     for (let i = 0; i < n; i++) {
@@ -1166,7 +1189,7 @@
     if (!sampler || !shadow) return;
     if (totalSweeps < 200) { el.style.display = "none"; return; }
 
-    const gap = Math.abs(cFraction(sampler) - cFraction(shadow));
+    const gap = Math.abs(bFraction(sampler) - bFraction(shadow));
     // exponential moving average: one sample of the gap says little
     gapEMA = gapEMA === null ? gap : 0.9 * gapEMA + 0.1 * gap;
 
@@ -1175,10 +1198,17 @@
     lastBadgeUpdate = now;
 
     // The gap between two independent samples fluctuates on the scale of the
-    // c-density's own standard error, which falls like 1/n. A fixed cutoff
-    // therefore fires constantly at small n (at n=11 the c-fraction moves in
+    // observable's own standard error, which falls like 1/n. A fixed cutoff
+    // therefore fires constantly at small n (at n=11 the fraction moves in
     // steps of 1/121, already 0.008) and is too loose at large n. Scale it,
     // with a floor so it never becomes hair-trigger.
+    //
+    // Measured at equilibrium, the b-density's standard deviation is 0.046,
+    // 0.036 and 0.018 at n = 12, 24, 48 -- about 2.5x the c-density's -- so
+    // the gap between two chains has sd about sqrt(2) times that. tol is
+    // 0.208, 0.104 and 0.052 there, so it stays a factor of 2 to 3 above the
+    // equilibrium gap at every size: loose enough not to false-alarm, and
+    // still crossed for hundreds of sweeps from a cold start.
     const n = sampler.n;
     const tol = Math.max(0.02, 2.5 / n);
 
@@ -1186,7 +1216,8 @@
     if (gapEMA > tol) {
       el.textContent =
         `NOT EQUILIBRATED - a second chain started from the opposite corner ` +
-        `disagrees by ${gapEMA.toFixed(3)} in c-vertex density (averaged; ` +
+        `disagrees by ${gapEMA.toFixed(3)} in through-vertex (b) density ` +
+        `(averaged; ` +
         `threshold ${tol.toFixed(3)} at this size). What is on screen is not ` +
         `yet a sample from the measure; it is where this particular run ` +
         `happens to be stuck.`;

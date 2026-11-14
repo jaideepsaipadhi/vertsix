@@ -7028,3 +7028,124 @@ def test_the_live_mcmc_samples_the_right_measure_at_general_weights():
     assert float(np.abs(exact_p - swapped).max()) < 1e-15, (
         "exchanging b1 and b2 changed the exact measure, which would break "
         "the argument the vertex-naming tests rest on")
+
+
+def test_the_equilibration_badge_uses_the_only_observable_that_can_see_burn_in():
+    """draw.js called the b-vertex density "c-vertex density", and had to.
+
+    cFraction tested (l,t,b,r) = (0,1,1,0) and (1,0,0,1), which are b2 and b1
+    in that file's own classifyBits, not c1 and c2. The badge then reported
+    the number as "c-vertex density". Two errors, and the obvious repair --
+    make it count c-vertices, matching its name and its label -- would have
+    been a serious regression, because the c-density cannot see burn-in at
+    all.
+
+    The proof is the starting states. The two extremal configurations the two
+    chains begin from have EXACTLY EQUAL c-density and maximally different
+    b-density. An equilibration diagnostic built on a statistic that is
+    identical on the two starts would announce "equilibrated" immediately from
+    the worst possible state -- a false assurance, which is the one thing this
+    badge exists to prevent.
+
+    So the fix was to rename the function and correct the label, not to change
+    the arithmetic. This pins the measurement that decides it.
+    """
+    import pathlib
+
+    import numpy as np
+
+    from sixvertex.cftp_exact import (_colour_indices, _sweep, _weight_table,
+                                      extremal_height)
+
+    def density(H, n, which):
+        H = np.asarray(H, dtype=np.int64)
+        tl, tr = H[:n, :n], H[:n, 1:]
+        bl, br = H[1:, :n], H[1:, 1:]
+        l, t = (bl - tl) == 1, (tr - tl) == 1
+        b, r = (br - bl) == 1, (br - tr) == 1
+        m = ((l & t & ~b & ~r) | (~l & ~t & b & r)) if which == "c" else \
+            ((~l & t & b & ~r) | (l & ~t & ~b & r))
+        return float(m.sum()) / (n * n)
+
+    # (a) the c-density is EQUAL on the two starts; the b-density is not
+    for n in (12, 24, 48):
+        lo, hi = extremal_height(n, "lo"), extremal_height(n, "hi")
+        assert density(lo, n, "c") == density(hi, n, "c"), (
+            f"n={n}: the c-density now differs on the two extremal starts, so "
+            f"it could serve as a diagnostic after all -- re-read this test")
+        assert density(lo, n, "b") - density(hi, n, "b") > 0.9, (
+            f"n={n}: the b-density no longer separates the extremal starts")
+
+    # (b) and it still cannot see burn-in one sweep in, where b can
+    n = 24
+    w = dict(a1=1.0, a2=1.0, b1=1.0, b2=1.0, c1=1.0, c2=1.0)
+    tbl = _weight_table(w)
+    ci, size = _colour_indices(n)
+    A = extremal_height(n, "lo").astype(np.float64)
+    B = extremal_height(n, "hi").astype(np.float64)
+    rA, rB = np.random.default_rng(1), np.random.default_rng(2)
+    A = _sweep(A, tbl, rA.random(A.shape), ci, size)
+    B = _sweep(B, tbl, rB.random(B.shape), ci, size)
+    gap_c = abs(density(A, n, "c") - density(B, n, "c"))
+    gap_b = abs(density(A, n, "b") - density(B, n, "b"))
+    tol = max(0.02, 2.5 / n)
+    assert gap_c < tol, (gap_c, tol)        # c would say "equilibrated"
+    assert gap_b > tol, (gap_b, tol)        # b correctly says it is not
+    assert gap_b > 10 * gap_c, (gap_b, gap_c)
+
+    # (c) the browser computes the b patterns and no longer says "c-vertex"
+    js = (pathlib.Path(__file__).resolve().parent.parent / "static"
+          / "draw.js").read_text(encoding="utf-8")
+    assert "function bFraction" in js, "the renamed function is gone"
+    assert "in c-vertex density" not in js, (
+        "the badge calls the through-vertex density a c-vertex density again")
+    body = js.split("function bFraction", 1)[1].split("function ", 1)[0]
+    assert "t===1 && bo===1" in body and "bo===0 && r===1" in body, (
+        "bFraction no longer selects the through-vertex patterns; if it was "
+        "changed to count c-vertices, read this test's docstring")
+
+
+def test_the_island_separation_figures_are_the_measured_ones():
+    """island.py claimed a median separation of 50x; it is 36.
+
+    The number matters because it is the whole argument for using
+    8-connectivity: 4-connected gives about 3.4x, where the island is
+    ambiguous, and 8-connected separates by a large factor. But "50" did not
+    reproduce at the stated conditions -- n=32, Delta=-3 -- where it is 36.2x
+    over 200 samples and 34.4x over the 40 that experiments/validate.py runs.
+    So the repository's own validation output had been printing 34.4 beside a
+    docstring saying 50.
+
+    Pinned as a band rather than a point, since these are medians over tens of
+    samples: what the argument needs is that 8-connectivity separates by more
+    than an order of magnitude where 4-connectivity does not, and that no
+    sample is ambiguous.
+    """
+    import numpy as np
+
+    from sixvertex.cftp_exact import cftp_sample
+    from experiments.island import island
+    from experiments.mixing import weights_for_delta
+
+    w = weights_for_delta(-3.0)
+    n, reps = 32, 60
+    seps = {}
+    for conn in (4, 8):
+        seps[conn] = np.array([
+            island(cftp_sample(n, w, master_seed=880000 + s)[0], n,
+                   connectivity=conn)["separation"] for s in range(reps)])
+
+    m4, m8 = float(np.median(seps[4])), float(np.median(seps[8]))
+    assert 2.5 < m4 < 5.0, (
+        f"4-connected median separation is {m4:.1f}x; the docstring records "
+        f"3.4 to 3.6")
+    assert 25.0 < m8 < 50.0, (
+        f"8-connected median separation is {m8:.1f}x; the docstring records "
+        f"36 (and used to claim 50, which is why this is pinned)")
+    assert m8 > 5 * m4, (
+        f"8-connectivity no longer separates by an order of magnitude more "
+        f"than 4-connectivity ({m8:.1f} vs {m4:.1f}), which is the entire "
+        f"reason the island is defined with 8-connectivity")
+    assert seps[8].min() >= 2.0, (
+        f"the least-separated of {reps} samples is {seps[8].min():.1f}x, so "
+        f"the island is no longer unambiguous in every sample")

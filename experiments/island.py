@@ -22,12 +22,21 @@ What the data says, measured on exact CFTP samples:
 
 * Connectivity matters more than it looks. Defining the island as the largest
   4-connected component of c-faces gives a median separation from the runner-up
-  of 3.6x and a biased mean, and defining it as the largest constant plateau of
+  of 3.4 to 3.6x (3.4 over 60 samples, re-measured) and a biased mean, and defining it as the largest constant plateau of
   G leaves the runner-up within a factor 2 in 43% of samples -- an ambiguity
   that does not shrink with n. The largest **8-connected** component of c-faces
-  separates by a median factor of 50 and was unambiguous in 100% of samples
+  separates by a median factor of 36 and was unambiguous in 100% of samples
   measured. That is the definition used here, and it is also the one Gorin
   described.
+
+  The figure was 50 here until it was re-measured. At the stated conditions --
+  n=32, Delta=-3 -- it is 36.2x over 200 samples and 34.4x over the 40 that
+  experiments/validate.py uses, so the repository's own validation run has
+  been printing 34.4 next to a docstring claiming 50. The conclusion is
+  untouched: the point of the number is that 8-connectivity separates by a
+  LARGE factor where 4-connectivity gives 3.6x, and the minimum over 200
+  samples is 8.3x, so the island is unambiguous in every sample rather than
+  merely usually.
 
 * The component is NOT a pure plateau, and the number here was wrong for a
   while. An earlier version of this file claimed 92-96% of its corners carry
@@ -41,8 +50,20 @@ What the data says, measured on exact CFTP samples:
 
 Caveat worth carrying into any conclusion: the fluctuation is small. The
 measured variance of k is about 0.13-0.22 across Delta from -1.2 to -5 and does
-not grow with n (0.14-0.18 for n = 24..64, which is the bounded variance a
-discrete Gaussian predicts). With sd ~ 0.42 only two or three lattice points
+not grow with n, which is the bounded variance a discrete Gaussian predicts.
+Re-measured with 200 samples per point and a bootstrap interval, because at
+the 30-40 samples validate.py uses the estimate ranges from 0.09 to 0.23 and
+invites a false report that the claim is wrong (one was made, from 40 samples
+giving 0.090):
+
+    n=32  Delta=-1.2    var(k) 0.190  [0.154, 0.221]
+    n=32  Delta=-2.0    var(k) 0.141  [0.106, 0.174]
+    n=32  Delta=-3.0    var(k) 0.151  [0.112, 0.188]
+    n=48  Delta=-3.0    var(k) 0.144  [0.106, 0.180]
+
+So the range holds and the n-independence holds (0.151 against 0.144), but
+only the 200-sample numbers support saying so; quote a 40-sample variance and
+it will contradict itself. With sd ~ 0.42 only two or three lattice points
 carry appreciable mass, so testing the *shape* needs large sample counts rather
 than large n -- the tails are where the Gaussian claim actually bites.
 """
