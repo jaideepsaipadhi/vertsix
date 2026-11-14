@@ -8012,3 +8012,158 @@ def test_the_cftp_heat_bath_threshold_is_exact_to_machine_precision():
                 f"p_up computed from the weights is {p_up:.12f}, so the "
                 f"weight table or the update disagrees with it")
 
+
+
+def test_the_browser_chain_threshold_is_exact_to_machine_precision():
+    """The fourth sampler, held to the same standard as the other three.
+
+    Audited first: scaling c1 by 1.10 inside sixvertex.js fails
+    test_the_in_browser_sampler_at_six_distinct_weights, but scaling it by
+    1.03 passes. 40000 thinned observations against the exact law is good
+    design -- the reference side carries no Monte Carlo error -- yet it still
+    leaves a 3% blind spot, and the draws are correlated so its effective
+    sample size is smaller than 40000.
+
+    The chain's acceptance probability is a deterministic function of the
+    weights, so it can be pinned instead of sampled. _rand() is a method, so
+    node can override it with a chosen value.
+
+    Two things make this a real cross-check rather than a restatement. The
+    threshold comes out at p = 0.504854368932 at n=2 -- the same number
+    test_the_cftp_heat_bath_threshold_is_exact_to_machine_precision derives
+    from the weights in Python, independently, with the six legal patterns
+    written out by hand. And the implementations share nothing: different
+    language, different PRNG, different sweep order.
+
+    The site coverage lesson carries over. At n=2 the only interior site has
+    c1 twice in each branch, so it cancels, and c2 never appears -- a c1 error
+    is invisible there. An n=3 site with difference {c1:+1, c2:+1, b1:-1,
+    b2:-1} supplies the rest, and the test asserts the union covers all six.
+
+    Finding which draw belongs to the target site is done by SEARCH, not by
+    replicating the sweep order in Python: for each candidate draw index, feed
+    the threshold minus 1e-12 there and 1.0 everywhere else (1.0 always
+    rejects, since p < 1), and require that exactly one index moves exactly
+    the target site to exactly the expected value -- and that the same index
+    with plus 1e-12 moves nothing at all.
+    """
+    import collections
+    import json
+    import pathlib
+    import shutil
+    import subprocess
+    import tempfile
+
+    import numpy as np
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available to run the shipped browser chain")
+
+    LEGAL = {(0, 0, 0, 0): "a1", (1, 1, 1, 1): "a2",
+             (1, 1, 0, 0): "c1", (0, 0, 1, 1): "c2",
+             (1, 0, 0, 1): "b1", (0, 1, 1, 0): "b2"}
+    w = dict(a1=1.3, a2=0.8, b1=1.7, b2=0.6, c1=2.1, c2=1.4)
+
+    def face_types(H, n):
+        out = []
+        for i in range(n):
+            for j in range(n):
+                tl, tr = H[i, j], H[i, j + 1]
+                bl, br = H[i + 1, j], H[i + 1, j + 1]
+                bits = (int(bl - tl == 1), int(tr - tl == 1),
+                        int(br - bl == 1), int(br - tr == 1))
+                out.append(LEGAL.get(bits, "ILLEGAL"))
+        return collections.Counter(out)
+
+    def weight_of(c):
+        if "ILLEGAL" in c:
+            return 0.0
+        v = 1.0
+        for name, k in c.items():
+            v *= w[name] ** k
+        return v
+
+    cases, covered = [], set()
+    for n in (2, 3):
+        for H0 in enumerate_height_functions(n):
+            if covered == set(w):
+                break
+            H0 = H0.astype(float)
+            for i in range(1, n):
+                for j in range(1, n):
+                    nb = [H0[i - 1, j], H0[i + 1, j],
+                          H0[i, j - 1], H0[i, j + 1]]
+                    if len(set(nb)) != 1:
+                        continue
+                    nv = nb[0]
+                    up, down = H0.copy(), H0.copy()
+                    up[i, j] = nv + 1
+                    down[i, j] = nv - 1
+                    fu, fd = face_types(up, n), face_types(down, n)
+                    wu, wd = weight_of(fu), weight_of(fd)
+                    if wu <= 0 or wd <= 0:
+                        continue
+                    visible = {k for k in w if fu[k] != fd[k]}
+                    if not visible - covered:
+                        continue
+                    covered |= visible
+                    other = nv + 1 if H0[i, j] == nv - 1 else nv - 1
+                    p_move = (wu if other == nv + 1 else wd) / (wu + wd)
+                    cases.append(dict(n=n, i=i, j=j,
+                                      H=H0.astype(int).ravel().tolist(),
+                                      target=int(other), p=float(p_move),
+                                      vis=sorted(visible)))
+
+    assert covered == set(w), (
+        f"these sites only pin {sorted(covered)}; {sorted(set(w) - covered)} "
+        f"would be unchecked")
+    assert any(abs(c["p"] - 0.504854368932) < 1e-11 for c in cases), (
+        "the n=2 threshold is no longer 0.504854368932, which is the number "
+        "the Python heat-bath test derives independently")
+
+    src = (pathlib.Path(__file__).resolve().parent.parent / "static"
+           / "sixvertex.js").read_text(encoding="utf-8")
+    driver = src + (
+        "\nconst w = " + json.dumps(w) + ";\n"
+        + "const cases = " + json.dumps(cases) + ";\n"
+        + "const out = [];\n"
+        + "for (const c of cases) {\n"
+        + "  const size = c.n + 1, ctr = c.i * size + c.j;\n"
+        + "  let found = null;\n"
+        + "  for (let k = 0; k < 8; k++) {\n"
+        + "    for (const sign of [-1, +1]) {\n"
+        + "      const s = new SixVertexJS(c.n, w, 1);\n"
+        + "      for (let m = 0; m < c.H.length; m++) s.H[m] = c.H[m];\n"
+        + "      let d = 0;\n"
+        + "      s._rand = () => (d++ === k ? c.p + sign * 1e-12 : 1.0);\n"
+        + "      s.step(1);\n"
+        + "      const changed = [];\n"
+        + "      for (let m = 0; m < c.H.length; m++)\n"
+        + "        if (s.H[m] !== c.H[m]) changed.push(m);\n"
+        + "      if (sign < 0 && changed.length === 1 && changed[0] === ctr\n"
+        + "          && s.H[ctr] === c.target) found = k;\n"
+        + "      if (sign > 0 && found === k && changed.length !== 0)"
+          " found = -1;\n"
+        + "    }\n"
+        + "  }\n"
+        + "  out.push({site: [c.i, c.j], n: c.n, vis: c.vis, drawIndex: found});\n"
+        + "}\n"
+        + "console.log(JSON.stringify(out));\n")
+
+    with tempfile.TemporaryDirectory() as d:
+        f = pathlib.Path(d) / "threshold.js"
+        f.write_text(driver, encoding="utf-8")
+        out = subprocess.run([node, str(f)], capture_output=True, text=True,
+                             timeout=180)
+    assert out.returncode == 0, out.stderr[:400]
+    results = json.loads(out.stdout.strip().splitlines()[-1])
+    assert len(results) == len(cases)
+
+    for r in results:
+        assert r["drawIndex"] is not None and r["drawIndex"] >= 0, (
+            f"n={r['n']} site={r['site']} (pins {r['vis']}): no draw index "
+            f"makes the browser chain flip exactly that site at exactly its "
+            f"computed threshold, so its acceptance probability disagrees "
+            f"with the weights")
